@@ -102,11 +102,21 @@ async function JoinConvo(
   //Save details
   await prisma.user.update({
     where: { snowflake },
-    data: { convoWithId: toJoin.id, seekingSince: null },
+    data: {
+      convoWithId: toJoin.id,
+      seekingSince: null,
+      numConvo: { increment: 1 },
+      numMessage: { increment: 1 },
+    },
   });
   await prisma.user.update({
     where: { id: toJoin.id },
-    data: { convoWithId: id, seekingSince: null },
+    data: {
+      convoWithId: id,
+      seekingSince: null,
+      numConvo: { increment: 1 },
+      numMessage: { increment: 1 },
+    },
   });
 }
 
@@ -114,16 +124,25 @@ async function MakeContext() {
   //To keep track of message edits
   const msgToMsgCircBuff: [Snowflake, Snowflake][] = [];
 
-  async function ForwardMessage(message: Message, user: User) {
+  async function ForwardMessage(message: Message, { id, convoWithId }: User) {
     try {
-      if (user.convoWithId === null) return "No convo";
-      const partnerChannel = await GetUserChannel(user.convoWithId);
+      if (convoWithId === null) return "No convo";
+      const partnerChannel = await GetUserChannel(convoWithId);
       const msg = await partnerChannel.send({
         content: message.content,
         embeds: message.embeds,
         files: message.attachments.map(a => a.url),
       });
+      //Increment message count
+      await prisma.user.update({
+        where: { id },
+        data: { numMessage: { increment: 1 } },
+      });
+      //Add both message IDs to message cache for edits and replies
       msgToMsgCircBuff.push([message.id, msg.id]);
+      while (msgToMsgCircBuff.length > 2_000) {
+        msgToMsgCircBuff.shift();
+      }
       return true;
     } catch (e) {
       return "Partner left";
@@ -293,7 +312,6 @@ main()
 //TODO: Probe for user reachability
 //TODO: Prevent consecutive conversations with same user
 //TODO: Waited for
-//TODO: User stats
 //TODO: Present user stats
 //TODO: Announce function
 //TODO: Partner waited for time
