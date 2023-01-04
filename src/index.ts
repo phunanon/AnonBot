@@ -1,11 +1,11 @@
-import { PrismaClient, User } from "@prisma/client";
-import { Client, IntentsBitField, CacheType, Partials } from "discord.js";
-import { Interaction, Message, PartialMessage, Typing } from "discord.js";
-import { ColorResolvable, EmbedBuilder, APIEmbedField } from "discord.js";
-import { TextBasedChannel, ChannelType, User as DUser } from "discord.js";
-import { BaseMessageOptions } from "discord.js";
-import { cacheAdd, cacheHas } from "./cache";
-import * as dotenv from "dotenv";
+import { PrismaClient, User } from '@prisma/client';
+import { Client, IntentsBitField, CacheType, Partials } from 'discord.js';
+import { Interaction, Message, PartialMessage, Typing } from 'discord.js';
+import { ColorResolvable, EmbedBuilder, APIEmbedField } from 'discord.js';
+import { TextBasedChannel, ChannelType, User as DUser } from 'discord.js';
+import { BaseMessageOptions } from 'discord.js';
+import { cacheAdd, cacheHas } from './cache';
+import * as dotenv from 'dotenv';
 dotenv.config();
 
 type Snowflake = string;
@@ -23,7 +23,7 @@ const prisma = new PrismaClient();
 async function MakeEmbed(
   title: string,
   {
-    colour = "#0099ff",
+    colour = '#0099ff',
     fields = [],
     footer,
   }: { colour?: ColorResolvable; fields?: APIEmbedField[]; footer?: boolean },
@@ -48,9 +48,9 @@ function UserStatsEmbedFields(user: User, name: string) {
   );
   const numDaysStr =
     numDays < 1
-      ? "today"
+      ? 'today'
       : numDays < 2
-      ? "yesterday"
+      ? 'yesterday'
       : `${ls(Math.floor(numDays))} days ago`;
   const numConvo = ls(user.numConvo);
   const numMsg = ls(user.numMessage);
@@ -86,12 +86,12 @@ async function EndConvo(user: User) {
       data: { convoWithId: null, seekingSince: null },
     });
     const partnerChannel = await GetUserChannel(user.convoWithId);
-    if (typeof partnerChannel !== "string") {
+    if (typeof partnerChannel !== 'string') {
       await SendEmbed(
         partnerChannel,
-        "Your partner left the conversation.",
-        { colour: "Red" },
-        "Send a message to start a new conversation.",
+        'Your partner left the conversation.',
+        { colour: 'Red' },
+        'Send a message to start a new conversation.',
       );
     }
   }
@@ -111,33 +111,33 @@ async function JoinConvo(
   const waitMin = Math.ceil(
     (new Date().getTime() - toJoin.seekingSince!.getTime()) / 1000 / 60,
   );
-  const plural = waitMin === 1 ? "" : "s";
+  const plural = waitMin === 1 ? '' : 's';
   //Generate stats
   const yourFields = [
-    UserStatsEmbedFields(user, "You"),
-    UserStatsEmbedFields(toJoin, "Them"),
+    UserStatsEmbedFields(user, 'You'),
+    UserStatsEmbedFields(toJoin, 'Them'),
   ];
   const theirFields = [
-    UserStatsEmbedFields(toJoin, "You"),
-    UserStatsEmbedFields(user, "Them"),
+    UserStatsEmbedFields(toJoin, 'You'),
+    UserStatsEmbedFields(user, 'Them'),
   ];
-  const matchEmbed = async (name: "You" | "Them") =>
+  const matchEmbed = async (name: 'You' | 'Them') =>
     await MakeEmbed(
-      "You have been matched with a partner!",
-      { colour: "Green", fields: name === "You" ? yourFields : theirFields },
+      'You have been matched with a partner!',
+      { colour: 'Green', fields: name === 'You' ? yourFields : theirFields },
       `${
-        name === "Them"
+        name === 'Them'
           ? `They waited **${waitMin} minute${plural}** for this conversation.\n`
-          : ""
+          : ''
       }To disconnect use \`/stop\`.
 To disconnect and block them, use \`/block\`.`,
     );
   //Inform users and exchange greetings
-  await partnerChannel.send(await matchEmbed("You")); //This will fail in the partner left after looking for a convo
-  await greeting.channel.send(await matchEmbed("Them"));
+  await partnerChannel.send(await matchEmbed('You')); //This will fail in the partner left after looking for a convo
+  await greeting.channel.send(await matchEmbed('Them'));
   if (toJoin.greeting) await greeting.channel.send(toJoin.greeting);
   await partnerChannel.send(
-    greeting.content || "[Your partner sent no greeting text]",
+    greeting.content || '[Your partner sent no greeting text]',
   );
   //Update database
   await prisma.user.update({
@@ -166,26 +166,26 @@ async function HandlePotentialCommand(
   reply: (message: BaseMessageOptions) => Promise<void>,
 ) {
   let embed: Awaited<ReturnType<typeof MakeEmbed>> | null = null;
-  if (commandName === "stop") {
+  if (commandName === 'stop') {
     if (user.convoWithId === null) {
-      embed = await MakeEmbed("You are not in a conversation.", {
-        colour: "DarkVividPink",
+      embed = await MakeEmbed('You are not in a conversation.', {
+        colour: 'DarkVividPink',
       });
     } else {
       await EndConvo(user);
       embed = await MakeEmbed(
-        "You have disconnected",
-        { colour: "#ff00ff" },
-        "Send a message to start a new conversation.",
+        'You have disconnected',
+        { colour: '#ff00ff' },
+        'Send a message to start a new conversation.',
       );
     }
   }
-  if (commandName === "block") {
+  if (commandName === 'block') {
     await EndConvo(user);
     embed = await MakeEmbed(
-      "Disconnected and blocked",
-      { colour: "#00ffff" },
-      "You will never match with them again.\nSend a message to start a new conversation.",
+      'Disconnected and blocked',
+      { colour: '#00ffff' },
+      'You will never match with them again.\nSend a message to start a new conversation.',
     );
   }
   if (embed) await reply(embed);
@@ -197,7 +197,7 @@ async function MakeContext() {
 
   async function ForwardMessage(message: Message, { id, convoWithId }: User) {
     try {
-      if (convoWithId === null) return "No convo";
+      if (convoWithId === null) return 'No convo';
       const partnerChannel = await GetUserChannel(convoWithId);
       const msg = await partnerChannel.send({
         content: message.content,
@@ -216,7 +216,7 @@ async function MakeContext() {
       }
       return true;
     } catch (e) {
-      return "Partner left";
+      return 'Partner left';
     }
   }
 
@@ -227,7 +227,7 @@ async function MakeContext() {
       //Touch user
       const user = await TouchUser(message.author);
       const { snowflake } = user;
-      if (message.content.startsWith("/")) {
+      if (message.content.startsWith('/')) {
         const commandName = message.content.match(/^\/(\w+)/)?.[1];
         if (commandName)
           await HandlePotentialCommand(commandName, user, async x => {
@@ -237,7 +237,7 @@ async function MakeContext() {
       }
       //Forward messages
       const forwardResult = await ForwardMessage(message, user);
-      if (forwardResult === "No convo") {
+      if (forwardResult === 'No convo') {
         //Start or join a conversation
         let partner = await prisma.user.findFirst({
           where: {
@@ -268,13 +268,13 @@ async function MakeContext() {
           });
           await SendEmbed(
             message.channel,
-            "Waiting for a partner match...",
+            'Waiting for a partner match...',
             { footer: true },
-            "Your message will be sent to them.\nTo cancel, use `/stop`.",
+            'Your message will be sent to them.\nTo cancel, use `/stop`.',
           );
         }
       }
-      if (forwardResult === "Partner left") {
+      if (forwardResult === 'Partner left') {
         //End conversation
         await prisma.user.update({
           where: { snowflake },
@@ -290,9 +290,9 @@ async function MakeContext() {
         //Inform user
         await SendEmbed(
           message.channel,
-          "Sorry, but your partner left the conversation.",
-          { colour: "#ff0000" },
-          "Send a message to start a new conversation.",
+          'Sorry, but your partner left the conversation.',
+          { colour: '#ff0000' },
+          'Send a message to start a new conversation.',
         );
       }
     },
@@ -303,7 +303,7 @@ async function MakeContext() {
       if (!channel) return;
       if (channel.type !== ChannelType.DM) {
         await interaction.reply({
-          content: "Please use this command in a DM.",
+          content: 'Please use this command in a DM.',
           ephemeral: true,
         });
         return;
@@ -318,7 +318,7 @@ async function MakeContext() {
       if (!user.convoWithId) return;
       cacheAdd(channel.id, 5_000);
       const partnerChannel = await GetUserChannel(user.convoWithId);
-      if (typeof partnerChannel !== "string")
+      if (typeof partnerChannel !== 'string')
         await partnerChannel?.sendTyping();
     },
     async HandleMessageUpdate(
@@ -329,31 +329,31 @@ async function MakeContext() {
         return;
       //TODO: Handle message edits
       newMessage.channel.send(
-        "Message edits not supported yet. Your partner will still see the old message",
+        'Message edits not supported yet. Your partner will still see the old message',
       );
     },
   };
 }
 
 async function main() {
-  console.log("Loading.");
-  client.once("ready", async () => {
+  console.log('Loading.');
+  client.once('ready', async () => {
     const ctx = await MakeContext();
 
     client.application?.commands.create({
-      name: "stop",
-      description: "Disconnect from partner / stop looking for a new one",
+      name: 'stop',
+      description: 'Disconnect from partner / stop looking for a new one',
     });
     client.application?.commands.create({
-      name: "block",
-      description: "Disconnect and never connect to this partner again",
+      name: 'block',
+      description: 'Disconnect and never connect to this partner again',
     });
 
-    client.on("messageCreate", ctx.HandleMessageCreate);
-    client.on("interactionCreate", ctx.HandleInteractionCreate);
-    client.on("typingStart", ctx.HandleTypingStart);
-    client.on("messageUpdate", ctx.HandleMessageUpdate);
-    console.log("Ready.");
+    client.on('messageCreate', ctx.HandleMessageCreate);
+    client.on('interactionCreate', ctx.HandleInteractionCreate);
+    client.on('typingStart', ctx.HandleTypingStart);
+    client.on('messageUpdate', ctx.HandleMessageUpdate);
+    console.log('Ready.');
   });
   client.login(process.env.DISCORD_KEY);
 }
@@ -370,7 +370,6 @@ main()
 //TODO: Button to start new convo (with genders)
 //TODO: Enforce blocks
 //TODO: Handle emoji reactions
-//TODO: Handle message edits
 //TODO: Handle message deletes
 //TODO: Probe for user reachability
 //TODO: Prevent consecutive convo with same user
