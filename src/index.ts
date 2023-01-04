@@ -3,6 +3,7 @@ import { Client, IntentsBitField, CacheType, Partials } from "discord.js";
 import { Interaction, Message, PartialMessage, Typing } from "discord.js";
 import { ColorResolvable, EmbedBuilder, APIEmbedField } from "discord.js";
 import { TextBasedChannel, ChannelType, User as DUser } from "discord.js";
+import { BaseMessageOptions } from "discord.js";
 import { cacheAdd, cacheHas } from "./cache";
 import * as dotenv from "dotenv";
 dotenv.config();
@@ -33,7 +34,9 @@ async function MakeEmbed(
   fields.forEach(x => embed.addFields(x));
   if (footer) {
     const numUsers = await prisma.user.count({ where: { accessible: true } });
-    embed.setFooter({ text: `${numUsers} users. Made by Auekha#4109.` });
+    embed.setFooter({
+      text: `${numUsers} strangers available. Made by Auekha#4109.`,
+    });
   }
   return { embeds: [embed] };
 }
@@ -120,6 +123,37 @@ async function JoinConvo(
   });
 }
 
+async function HandlePotentialCommand(
+  commandName: string,
+  user: User,
+  reply: (message: BaseMessageOptions) => Promise<void>,
+) {
+  let embed: Awaited<ReturnType<typeof MakeEmbed>> | null = null;
+  if (commandName === "stop") {
+    if (user.convoWithId === null) {
+      embed = await MakeEmbed("You are not in a conversation.", {
+        colour: "DarkVividPink",
+      });
+    } else {
+      await EndConvo(user);
+      embed = await MakeEmbed(
+        "You have disconnected",
+        { colour: "#ff00ff" },
+        "Send a message to start a new conversation.",
+      );
+    }
+  }
+  if (commandName === "block") {
+    await EndConvo(user);
+    embed = await MakeEmbed(
+      "Disconnected and blocked",
+      { colour: "#00ffff" },
+      "You will never match with them again.\nSend a message to start a new conversation.",
+    );
+  }
+  if (embed) await reply(embed);
+}
+
 async function MakeContext() {
   //To keep track of message edits
   const msgToMsgCircBuff: [Snowflake, Snowflake][] = [];
@@ -156,6 +190,14 @@ async function MakeContext() {
       //Touch user
       const user = await TouchUser(message.author);
       const { snowflake } = user;
+      if (message.content.startsWith("/")) {
+        const commandName = message.content.match(/^\/(\w+)/)?.[1];
+        if (commandName)
+          await HandlePotentialCommand(commandName, user, async x => {
+            await message.reply(x);
+          });
+        return;
+      }
       //Forward messages
       const forwardResult = await ForwardMessage(message, user);
       if (forwardResult === "No convo") {
@@ -218,36 +260,20 @@ async function MakeContext() {
       }
     },
     async HandleInteractionCreate(interaction: Interaction<CacheType>) {
-      if (interaction.isCommand()) {
-        const { commandName, channel } = interaction;
-        const user = await TouchUser(interaction.user);
-        if (!channel) return;
-        if (channel.type !== ChannelType.DM) {
-          await interaction.reply({
-            content: "Please use this command in a DM.",
-            ephemeral: true,
-          });
-          return;
-        }
-        if (commandName === "stop") {
-          await EndConvo(user);
-          const embed = await MakeEmbed(
-            "You have disconnected",
-            { colour: "#ff00ff" },
-            "Send a message to start a new conversation.",
-          );
-          await interaction.reply(embed);
-        }
-        if (commandName === "block") {
-          await EndConvo(user);
-          const embed = await MakeEmbed(
-            "Disconnected and blocked",
-            { colour: "#00ffff" },
-            "You will never match with them again.\nSend a message to start a new conversation.",
-          );
-          await interaction.reply(embed);
-        }
+      if (!interaction.isCommand()) return;
+      const { commandName, channel } = interaction;
+      const user = await TouchUser(interaction.user);
+      if (!channel) return;
+      if (channel.type !== ChannelType.DM) {
+        await interaction.reply({
+          content: "Please use this command in a DM.",
+          ephemeral: true,
+        });
+        return;
       }
+      HandlePotentialCommand(commandName, user, async x => {
+        await interaction.reply(x);
+      });
     },
     async HandleTypingStart({ channel, user: dUser }: Typing) {
       if (cacheHas(channel.id) || dUser.bot || !dUser.tag) return;
@@ -305,8 +331,8 @@ main()
 
 //TODO: Message guild newcomers with introduction
 //TODO: Button to start new convo (with genders)
-//TODO: Handle blocks
-//TODO: Handle commands as messages
+//TODO: Enforce blocks
+//TODO: Handle emoji reactions
 //TODO: Handle message edits
 //TODO: Handle message deletes
 //TODO: Probe for user reachability
