@@ -41,6 +41,23 @@ async function MakeEmbed(
   return { embeds: [embed] };
 }
 
+function UserStatsEmbedFields(user: User, name: string) {
+  const ls = (n: number) => n.toLocaleString();
+  const numDays = Math.floor(
+    (Date.now() - user.timestamp.getTime()) / 86400000,
+  );
+  const numDaysStr =
+    numDays < 1
+      ? "today"
+      : numDays < 2
+      ? "yesterday"
+      : `${ls(Math.floor(numDays))} days ago`;
+  const numConvo = ls(user.numConvo);
+  const numMsg = ls(user.numMessage);
+  const value = `Joined ${numDaysStr}; ${numConvo} convos, ${numMsg} messages.`;
+  return { name, value };
+}
+
 async function SendEmbed(
   channel: TextBasedChannel,
   ...args: Parameters<typeof MakeEmbed>
@@ -85,30 +102,44 @@ async function EndConvo(user: User) {
 }
 
 async function JoinConvo(
-  { id, snowflake }: User,
+  user: User,
   toJoin: User,
   greeting: Message,
   partnerChannel: TextBasedChannel,
 ) {
+  const { id, snowflake } = user;
   const waitMin = Math.ceil(
     (new Date().getTime() - toJoin.seekingSince!.getTime()) / 1000 / 60,
   );
   const plural = waitMin === 1 ? "" : "s";
-  //Inform user and send greeting
-  const matchEmbed = await MakeEmbed(
-    "You have been matched with a partner!",
-    { colour: "Green" },
-    `They waited **${waitMin} minute${plural}** for this conversation.
-To disconnect use \`/stop\`.
-To disconnect and block this partner, use \`/block\`.`,
-  );
-  await partnerChannel.send(matchEmbed); //This will fail in the partner left after looking for a convo
-  await greeting.channel.send(matchEmbed);
+  //Generate stats
+  const yourFields = [
+    UserStatsEmbedFields(user, "You"),
+    UserStatsEmbedFields(toJoin, "Them"),
+  ];
+  const theirFields = [
+    UserStatsEmbedFields(toJoin, "You"),
+    UserStatsEmbedFields(user, "Them"),
+  ];
+  const matchEmbed = async (name: "You" | "Them") =>
+    await MakeEmbed(
+      "You have been matched with a partner!",
+      { colour: "Green", fields: name === "You" ? yourFields : theirFields },
+      `${
+        name === "Them"
+          ? `They waited **${waitMin} minute${plural}** for this conversation.\n`
+          : ""
+      }To disconnect use \`/stop\`.
+To disconnect and block them, use \`/block\`.`,
+    );
+  //Inform users and exchange greetings
+  await partnerChannel.send(await matchEmbed("You")); //This will fail in the partner left after looking for a convo
+  await greeting.channel.send(await matchEmbed("Them"));
   if (toJoin.greeting) await greeting.channel.send(toJoin.greeting);
   await partnerChannel.send(
     greeting.content || "[Your partner sent no greeting text]",
   );
-  //Save details
+  //Update database
   await prisma.user.update({
     where: { snowflake },
     data: {
@@ -343,7 +374,6 @@ main()
 //TODO: Handle message deletes
 //TODO: Probe for user reachability
 //TODO: Prevent consecutive convo with same user
-//TODO: Present user stats
 //TODO: Announce function
 //TODO: Estimated wait time
 //TODO: Gender match
