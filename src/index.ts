@@ -90,11 +90,17 @@ async function JoinConvo(
   greeting: Message,
   partnerChannel: TextBasedChannel,
 ) {
+  const waitMin = Math.ceil(
+    (new Date().getTime() - toJoin.seekingSince!.getTime()) / 1000 / 60,
+  );
+  const plural = waitMin === 1 ? "" : "s";
   //Inform user and send greeting
   const matchEmbed = await MakeEmbed(
     "You have been matched with a partner!",
     { colour: "Green" },
-    "To disconnect use `/stop`.\nTo disconnect and block this partner, use `/block`.",
+    `They waited **${waitMin} minute${plural}** for this conversation.
+To disconnect use \`/stop\`.
+To disconnect and block this partner, use \`/block\`.`,
   );
   await partnerChannel.send(matchEmbed); //This will fail in the partner left after looking for a convo
   await greeting.channel.send(matchEmbed);
@@ -336,10 +342,8 @@ main()
 //TODO: Handle message edits
 //TODO: Handle message deletes
 //TODO: Probe for user reachability
-//TODO: Prevent consecutive conversations with same user
-//TODO: Waited for
+//TODO: Prevent consecutive convo with same user
 //TODO: Present user stats
 //TODO: Announce function
-//TODO: Partner waited for time
 //TODO: Estimated wait time
 //TODO: Gender match
