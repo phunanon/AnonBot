@@ -33,9 +33,17 @@ async function MakeEmbed(
   if (body) embed.setDescription(body);
   fields.forEach(x => embed.addFields(x));
   if (footer) {
-    const numUsers = await prisma.user.count({ where: { accessible: true } });
+    const numUser = (
+      await prisma.user.count({ where: { accessible: true } })
+    ).toLocaleString();
+    const numConvo = (
+      await prisma.user.aggregate({ _sum: { numConvo: true } })
+    )._sum.numConvo!.toLocaleString();
+    const numMessage = (
+      await prisma.user.aggregate({ _sum: { numMessage: true } })
+    )._sum.numMessage!.toLocaleString();
     embed.setFooter({
-      text: `${numUsers} strangers available. Made by Auekha#4109.`,
+      text: `${numUser} strangers; ${numConvo} convos, ${numMessage} messages ever.`,
     });
   }
   return { embeds: [embed] };
@@ -79,12 +87,15 @@ async function GetUserChannel(id: number) {
   return await member.createDM(true);
 }
 
+/** Ends user's conversation, or if not in one stops seeking for one. */
 async function EndConvo(user: User) {
   if (user.convoWithId) {
+    //Update partner seeking
     await prisma.user.update({
       where: { id: user.convoWithId },
       data: { convoWithId: null, seekingSince: null },
     });
+    //Inform partner
     const partnerChannel = await GetUserChannel(user.convoWithId);
     if (typeof partnerChannel !== 'string') {
       await SendEmbed(
@@ -140,23 +151,19 @@ To disconnect and block them, use \`/block\`.`,
     greeting.content || '[Your partner sent no greeting text]',
   );
   //Update database
+  const updateData = {
+    seekingSince: null,
+    greeting: null,
+    numConvo: { increment: 1 },
+    numMessage: { increment: 1 },
+  };
   await prisma.user.update({
     where: { snowflake },
-    data: {
-      convoWithId: toJoin.id,
-      seekingSince: null,
-      numConvo: { increment: 1 },
-      numMessage: { increment: 1 },
-    },
+    data: { convoWithId: toJoin.id, ...updateData },
   });
   await prisma.user.update({
     where: { id: toJoin.id },
-    data: {
-      convoWithId: id,
-      seekingSince: null,
-      numConvo: { increment: 1 },
-      numMessage: { increment: 1 },
-    },
+    data: { convoWithId: id, ...updateData },
   });
 }
 
@@ -167,12 +174,10 @@ async function HandlePotentialCommand(
 ) {
   let embed: Awaited<ReturnType<typeof MakeEmbed>> | null = null;
   if (commandName === 'stop') {
+    await EndConvo(user);
     if (user.convoWithId === null) {
-      embed = await MakeEmbed('You are not in a conversation.', {
-        colour: 'DarkVividPink',
-      });
+      embed = await MakeEmbed('Okay.', { colour: 'DarkVividPink' });
     } else {
-      await EndConvo(user);
       embed = await MakeEmbed(
         'You have disconnected',
         { colour: '#ff00ff' },
@@ -366,13 +371,13 @@ main()
     process.exit(1);
   });
 
-//TODO: Message guild newcomers with introduction
-//TODO: Button to start new convo (with genders)
 //TODO: Enforce blocks
 //TODO: Handle emoji reactions
 //TODO: Handle message deletes
+//TODO: Handle message replies
+//TODO: Announce function
+//TODO: Message guild newcomers with introduction
+//TODO: Gender match (with buttons)
+//TODO: Estimated wait time
 //TODO: Probe for user reachability
 //TODO: Prevent consecutive convo with same user
-//TODO: Announce function
-//TODO: Estimated wait time
-//TODO: Gender match
