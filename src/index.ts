@@ -3,12 +3,10 @@ import { Client, IntentsBitField, CacheType, Partials } from 'discord.js';
 import { Interaction, Message, PartialMessage, Typing } from 'discord.js';
 import { ColorResolvable, EmbedBuilder, APIEmbedField } from 'discord.js';
 import { TextBasedChannel, ChannelType, User as DUser } from 'discord.js';
-import { BaseMessageOptions } from 'discord.js';
+import { BaseMessageOptions, ClientEvents } from 'discord.js';
 import { cacheAdd, cacheHas } from './cache';
 import * as dotenv from 'dotenv';
 dotenv.config();
-
-type Snowflake = string;
 
 const client = new Client({
   intents: [
@@ -200,14 +198,21 @@ async function HandlePotentialCommand(
 }
 
 async function MakeContext() {
-  //To keep track of message edits
-  const msgToMsgCircBuff: [Snowflake, Snowflake][] = [];
+  //Circular buffer to keep track of message edits
+  const msgToMsg: { a: Message; b: Message }[] = [];
+
+  async function GetM2M(message: Message | PartialMessage) {
+    const m2m = msgToMsg.find(({ a, b }) => [a.id, b.id].includes(message.id));
+    if (!m2m) return;
+    const partnerMessage = m2m.a.id === message.id ? m2m.b : m2m.a;
+    return partnerMessage;
+  }
 
   async function ForwardMessage(message: Message, { id, convoWithId }: User) {
     try {
       if (convoWithId === null) return 'No convo';
       const partnerChannel = await GetUserChannel(convoWithId);
-      const msg = await partnerChannel.send({
+      const partnerMessage = await partnerChannel.send({
         content: message.content,
         embeds: message.embeds,
         files: message.attachments.map(a => a.url),
@@ -217,10 +222,10 @@ async function MakeContext() {
         where: { id },
         data: { numMessage: { increment: 1 } },
       });
-      //Add both message IDs to message cache for edits and replies
-      msgToMsgCircBuff.push([message.id, msg.id]);
-      while (msgToMsgCircBuff.length > 2_000) {
-        msgToMsgCircBuff.shift();
+      //Add both message to message cache for edits, replies, and emojis
+      msgToMsg.push({ a: message, b: partnerMessage });
+      while (msgToMsg.length > 2_000) {
+        msgToMsg.shift();
       }
       return true;
     } catch (e) {
@@ -342,6 +347,24 @@ async function MakeContext() {
         'Message edits not supported yet. Your partner will still see the old message',
       );
     },
+    async HandleReactionAdd(
+      ...[{ message, emoji }, user]: ClientEvents['messageReactionAdd']
+    ) {
+      if (user.bot) return;
+      const partnerMessage = await GetM2M(message);
+      if (!partnerMessage) return;
+      await partnerMessage.react(emoji);
+    },
+    async HandleReactionRemove(
+      ...[{ message, emoji }, user]: ClientEvents['messageReactionRemove']
+    ) {
+      if (user.bot || !client.user) return;
+      const partnerMessage = await GetM2M(message);
+      if (!partnerMessage) return;
+      await partnerMessage.reactions.cache
+        .find(x => x.emoji.name === emoji.name)
+        ?.users.remove(client.user.id);
+    },
   };
 }
 
@@ -363,6 +386,8 @@ async function main() {
     client.on('interactionCreate', ctx.HandleInteractionCreate);
     client.on('typingStart', ctx.HandleTypingStart);
     client.on('messageUpdate', ctx.HandleMessageUpdate);
+    client.on('messageReactionAdd', ctx.HandleReactionAdd);
+    client.on('messageReactionRemove', ctx.HandleReactionRemove);
     console.log('Ready.');
   });
   client.login(process.env.DISCORD_KEY);
@@ -376,7 +401,6 @@ main()
     process.exit(1);
   });
 
-//TODO: Handle emoji reactions
 //TODO: Handle message deletes
 //TODO: Handle message replies
 //TODO: Announce function
@@ -385,3 +409,4 @@ main()
 //TODO: Probe for user reachability
 //TODO: Prevent consecutive convo with same user
 //TODO: Estimated wait time
+//TODO: X messages in last Y minutes (analyse msgToMsg)
