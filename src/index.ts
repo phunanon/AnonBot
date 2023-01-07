@@ -187,6 +187,9 @@ async function HandlePotentialCommand(
   }
   if (commandName === 'block') {
     await EndConvo(user);
+    await prisma.block.create({
+      data: { blockerId: user.id, blockedId: user.convoWithId! },
+    });
     embed = await MakeEmbed(
       'Disconnected and blocked',
       { colour: '#00ffff' },
@@ -231,7 +234,7 @@ async function MakeContext() {
       if (message.channel.type !== ChannelType.DM) return;
       //Touch user
       const user = await TouchUser(message.author);
-      const { snowflake } = user;
+      const { id, snowflake } = user;
       if (message.content.startsWith('/')) {
         const commandName = message.content.match(/^\/(\w+)/)?.[1];
         if (commandName)
@@ -250,6 +253,8 @@ async function MakeContext() {
             convoWithId: null,
             snowflake: { not: snowflake },
             seekingSince: { not: null },
+            blocked: { none: { blockerId: id } },
+            blocker: { none: { blockedId: id } },
           },
         });
         if (partner) {
@@ -371,13 +376,12 @@ main()
     process.exit(1);
   });
 
-//TODO: Enforce blocks
 //TODO: Handle emoji reactions
 //TODO: Handle message deletes
 //TODO: Handle message replies
 //TODO: Announce function
 //TODO: Message guild newcomers with introduction
 //TODO: Gender match (with buttons)
-//TODO: Estimated wait time
 //TODO: Probe for user reachability
 //TODO: Prevent consecutive convo with same user
+//TODO: Estimated wait time
