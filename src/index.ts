@@ -208,14 +208,24 @@ async function MakeContext() {
     return partnerMessage;
   }
 
+  async function ResolveReply({ reference, channel }: Message) {
+    if (!reference) return;
+    const replied = await channel.messages.fetch(`${reference.messageId}`);
+    const partnerMessage = await GetM2M(replied);
+    if (!partnerMessage) return;
+    return { messageReference: partnerMessage };
+  }
+
   async function ForwardMessage(message: Message, { id, convoWithId }: User) {
     try {
       if (convoWithId === null) return 'No convo';
       const partnerChannel = await GetUserChannel(convoWithId);
+      const reply = await ResolveReply(message);
       const partnerMessage = await partnerChannel.send({
         content: message.content,
         embeds: message.embeds,
         files: message.attachments.map(a => a.url),
+        reply,
       });
       //Increment message count
       await prisma.user.update({
@@ -401,7 +411,6 @@ main()
     process.exit(1);
   });
 
-//TODO: Handle message replies
 //TODO: Announce function
 //TODO: Message guild newcomers with introduction
 //TODO: Gender match (with buttons)
@@ -409,3 +418,4 @@ main()
 //TODO: Prevent consecutive convo with same user
 //TODO: Estimated wait time
 //TODO: X messages in last Y minutes (analyse msgToMsg)
+//TODO: "why not join X while you wait?"
