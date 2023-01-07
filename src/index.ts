@@ -338,14 +338,13 @@ async function MakeContext() {
     },
     async HandleMessageUpdate(
       oldMessage: Message<boolean> | PartialMessage,
-      newMessage: Message<boolean> | PartialMessage,
+      newMessage?: Message<boolean> | PartialMessage,
     ) {
       if (oldMessage.author?.bot || oldMessage.channel.type !== ChannelType.DM)
         return;
-      //TODO: Handle message edits
-      newMessage.channel.send(
-        'Message edits not supported yet. Your partner will still see the old message',
-      );
+      const parterMessage = await GetM2M(oldMessage);
+      if (!parterMessage) return;
+      parterMessage?.edit(newMessage?.content ?? '[deleted]');
     },
     async HandleReactionAdd(
       ...[{ message, emoji }, user]: ClientEvents['messageReactionAdd']
@@ -386,6 +385,7 @@ async function main() {
     client.on('interactionCreate', ctx.HandleInteractionCreate);
     client.on('typingStart', ctx.HandleTypingStart);
     client.on('messageUpdate', ctx.HandleMessageUpdate);
+    client.on('messageDelete', ctx.HandleMessageUpdate);
     client.on('messageReactionAdd', ctx.HandleReactionAdd);
     client.on('messageReactionRemove', ctx.HandleReactionRemove);
     console.log('Ready.');
@@ -401,7 +401,6 @@ main()
     process.exit(1);
   });
 
-//TODO: Handle message deletes
 //TODO: Handle message replies
 //TODO: Announce function
 //TODO: Message guild newcomers with introduction
