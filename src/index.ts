@@ -184,6 +184,7 @@ async function HandlePotentialCommand(
   commandName: string,
   user: User,
   reply: (message: BaseMessageOptions) => Promise<void>,
+  arg?: string,
 ) {
   let embed: Awaited<ReturnType<typeof MakeEmbed>> | null = null;
   if (commandName === 'stop') {
@@ -212,7 +213,39 @@ async function HandlePotentialCommand(
   if (commandName === 'gender') {
     embed = await GenderEmbed(user);
   }
+  if (commandName === 'announce' && arg && [1, 2].includes(user.id)) {
+    const snowflakes = (
+      await prisma.user.findMany({
+        select: { snowflake: true },
+      })
+    ).map(x => x.snowflake);
+    const embed = new EmbedBuilder()
+      .setColor('White')
+      .setTitle('Bot announcement')
+      .setDescription(arg);
+    for (const snowflake of snowflakes) {
+      try {
+        const member = await client.users.fetch(`${snowflake}`);
+        const channel = await member.createDM(true);
+        await channel.send({ embeds: [embed] });
+      } catch (e) {
+        await MarkInaccessible(snowflake);
+      }
+    }
+  }
   if (embed) await reply(embed);
+}
+
+async function MarkInaccessible(snowflake: bigint) {
+  await prisma.user.update({
+    where: { snowflake },
+    data: {
+      accessible: false,
+      convoWithId: null,
+      seekingSince: null,
+      greeting: null,
+    },
+  });
 }
 
 async function FindConvo(user: User, message: Message) {
@@ -242,15 +275,7 @@ async function FindConvo(user: User, message: Message) {
         const partnerChannel = await GetUserChannel(partner.id);
         await JoinConvo(user, partner, message, partnerChannel);
       } catch (e) {
-        await prisma.user.update({
-          where: { id: partner.id },
-          data: {
-            accessible: false,
-            convoWithId: null,
-            seekingSince: null,
-            greeting: null,
-          },
-        });
+        await MarkInaccessible(partner.snowflake);
         partner = undefined;
         continue;
       }
@@ -352,12 +377,14 @@ async function MakeContext() {
       //Touch user
       const user = await TouchUser(message.author);
       const { snowflake } = user;
-      if (message.content.startsWith('/')) {
-        const commandName = message.content.match(/^\/(\w+)/)?.[1];
+      if (/^(\/|!)/.test(message.content)) {
+        const [_, commandName, arg] =
+          message.content.trim().match(/^(?:\/|!)(\w+)(?:\s(.+))?/) ?? [];
+        const reply = async (x: BaseMessageOptions) => {
+          await message.reply(x);
+        };
         if (commandName)
-          await HandlePotentialCommand(commandName, user, async x => {
-            await message.reply(x);
-          });
+          await HandlePotentialCommand(commandName, user, reply, arg);
         return;
       }
       //Forward messages
@@ -470,7 +497,6 @@ main()
     process.exit(1);
   });
 
-//TODO: Announce function
 //TODO: "why not join X while you wait?"
 //Release!
 //TODO: Gender change cooldown
