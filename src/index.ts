@@ -4,6 +4,9 @@ import { Interaction, Message, PartialMessage, Typing } from 'discord.js';
 import { ColorResolvable, EmbedBuilder, APIEmbedField } from 'discord.js';
 import { TextBasedChannel, ChannelType, User as DUser } from 'discord.js';
 import { BaseMessageOptions, ClientEvents } from 'discord.js';
+import { ActionRowBuilder, ButtonBuilder } from 'discord.js';
+import { CommandInteraction, ButtonInteraction } from 'discord.js';
+import { ChangeGender, GenderEmbed, GenderSeeking } from './gender';
 import { cacheAdd, cacheHas } from './cache';
 import * as dotenv from 'dotenv';
 dotenv.config();
@@ -18,13 +21,19 @@ const client = new Client({
 });
 const prisma = new PrismaClient();
 
-async function MakeEmbed(
+export async function MakeEmbed(
   title: string,
   {
     colour = '#0099ff',
     fields = [],
+    rows = [],
     footer,
-  }: { colour?: ColorResolvable; fields?: APIEmbedField[]; footer?: boolean },
+  }: {
+    colour?: ColorResolvable;
+    fields?: APIEmbedField[];
+    rows?: ActionRowBuilder<ButtonBuilder>[];
+    footer?: boolean;
+  },
   body?: string,
 ) {
   const embed = new EmbedBuilder().setColor(colour).setTitle(title);
@@ -44,7 +53,7 @@ async function MakeEmbed(
       text: `${numUser} strangers; ${numConvo} convos, ${numMessage} messages ever.`,
     });
   }
-  return { embeds: [embed] };
+  return { embeds: [embed], components: rows };
 }
 
 function UserStatsEmbedFields(user: User, name: string) {
@@ -122,28 +131,34 @@ async function JoinConvo(
   );
   const plural = waitMin === 1 ? '' : 's';
   //Generate stats
+  const { gender: youGender, seeking: youSeeking } = GenderSeeking(user);
+  const { gender: themGender, seeking: themSeeking } = GenderSeeking(toJoin);
+  const seeking = (name: string, seeking: string[], gender?: string) =>
+    `${name} – ${gender ? `${gender} ` : ''}seeking ${seeking.join(' + ')}`;
   const yourFields = [
-    UserStatsEmbedFields(user, 'You'),
-    UserStatsEmbedFields(toJoin, 'Them'),
+    UserStatsEmbedFields(user, seeking('You', youSeeking, youGender)),
+    UserStatsEmbedFields(toJoin, seeking('Them', themSeeking, themGender)),
   ];
   const theirFields = [
-    UserStatsEmbedFields(toJoin, 'You'),
-    UserStatsEmbedFields(user, 'Them'),
+    UserStatsEmbedFields(toJoin, seeking('You', themSeeking, themGender)),
+    UserStatsEmbedFields(user, seeking('Them', youSeeking, youGender)),
   ];
-  const matchEmbed = async (name: 'You' | 'Them') =>
+  const matchEmbed = async (name: 'you' | 'them') =>
     await MakeEmbed(
       'You have been matched with a partner!',
-      { colour: 'Green', fields: name === 'You' ? yourFields : theirFields },
+      { colour: 'Green', fields: name === 'you' ? yourFields : theirFields },
       `${
-        name === 'Them'
+        name === 'them'
           ? `They waited **${waitMin} minute${plural}** for this conversation.\n`
           : ''
       }To disconnect use \`/stop\`.
-To disconnect and block them, use \`/block\`.`,
+To disconnect and block them, use \`/block\`.
+To match particular genders, use \`/gender\`.`,
     );
   //Inform users and exchange greetings
-  await partnerChannel.send(await matchEmbed('You')); //This will fail in the partner left after looking for a convo
-  await greeting.channel.send(await matchEmbed('Them'));
+  //(This partner send will throw if the partner left after looking for a convo)
+  await partnerChannel.send(await matchEmbed('them'));
+  await greeting.channel.send(await matchEmbed('you'));
   if (toJoin.greeting) await greeting.channel.send(toJoin.greeting);
   await partnerChannel.send(
     greeting.content || '[Your partner sent no greeting text]',
@@ -178,7 +193,7 @@ async function HandlePotentialCommand(
     } else {
       embed = await MakeEmbed(
         'You have disconnected',
-        { colour: '#ff00ff' },
+        { colour: '#ff00ff', footer: true },
         'Send a message to start a new conversation.',
       );
     }
@@ -194,7 +209,94 @@ async function HandlePotentialCommand(
       'You will never match with them again.\nSend a message to start a new conversation.',
     );
   }
+  if (commandName === 'gender') {
+    embed = await GenderEmbed(user);
+  }
   if (embed) await reply(embed);
+}
+
+async function FindConvo(user: User, message: Message) {
+  const { id, snowflake, sexFlags } = user;
+  while (true) {
+    let [partner] = await prisma.$queryRaw<User[]>`
+      SELECT * FROM "User"
+      WHERE accessible = true
+      AND convoWithId IS NULL
+      AND snowflake != ${snowflake}
+      AND seekingSince IS NOT NULL
+      AND NOT EXISTS (
+        SELECT * FROM "Block"
+        WHERE blockerId = ${id} AND blockedId = "User".id
+      )
+      AND NOT EXISTS (
+        SELECT * FROM "Block"
+        WHERE blockerId = "User".id AND blockedId = ${id}
+      )
+      AND (${sexFlags} & (sexFlags >> 3)) and (sexFlags & (${sexFlags} >> 3))
+      ORDER BY seekingSince ASC
+      LIMIT 1
+    `;
+    if (partner) {
+      //Attempt to join a conversation (fails if partner left after seeking)
+      try {
+        const partnerChannel = await GetUserChannel(partner.id);
+        await JoinConvo(user, partner, message, partnerChannel);
+      } catch (e) {
+        await prisma.user.update({
+          where: { id: partner.id },
+          data: {
+            accessible: false,
+            convoWithId: null,
+            seekingSince: null,
+            greeting: null,
+          },
+        });
+        partner = undefined;
+        continue;
+      }
+    }
+    if (!partner) {
+      //Start a conversation
+      await prisma.user.update({
+        where: { snowflake },
+        data: {
+          convoWithId: null,
+          seekingSince: new Date(),
+          greeting: message.content,
+        },
+      });
+      await SendEmbed(
+        message.channel,
+        'Waiting for a partner match...',
+        { footer: true },
+        'Your message will be sent to them.\nTo cancel, use `/stop`.',
+      );
+    }
+    break;
+  }
+}
+
+async function HandleCommandInteraction(interaction: CommandInteraction) {
+  const { commandName, channel } = interaction;
+  const user = await TouchUser(interaction.user);
+  if (!channel) return;
+  if (channel.type !== ChannelType.DM) {
+    await interaction.reply({
+      content: 'Please use this command in a DM.',
+      ephemeral: true,
+    });
+    return;
+  }
+  await HandlePotentialCommand(commandName, user, async x => {
+    await interaction.reply(x);
+  });
+}
+
+async function HandleButtonInteraction(interaction: ButtonInteraction) {
+  const { customId } = interaction;
+  const user = await TouchUser(interaction.user);
+  await ChangeGender(prisma, user, customId);
+  await interaction.update(await GenderEmbed(user));
 }
 
 async function MakeContext() {
@@ -249,7 +351,7 @@ async function MakeContext() {
       if (message.channel.type !== ChannelType.DM) return;
       //Touch user
       const user = await TouchUser(message.author);
-      const { id, snowflake } = user;
+      const { snowflake } = user;
       if (message.content.startsWith('/')) {
         const commandName = message.content.match(/^\/(\w+)/)?.[1];
         if (commandName)
@@ -262,42 +364,7 @@ async function MakeContext() {
       const forwardResult = await ForwardMessage(message, user);
       if (forwardResult === 'No convo') {
         //Start or join a conversation
-        let partner = await prisma.user.findFirst({
-          where: {
-            accessible: true,
-            convoWithId: null,
-            snowflake: { not: snowflake },
-            seekingSince: { not: null },
-            blocked: { none: { blockerId: id } },
-            blocker: { none: { blockedId: id } },
-          },
-        });
-        if (partner) {
-          //Attempt to join a conversation (fails if partner left after seeking)
-          const partnerChannel = await GetUserChannel(partner.id);
-          try {
-            await JoinConvo(user, partner, message, partnerChannel);
-          } catch (e) {
-            partner = null;
-          }
-        }
-        if (!partner) {
-          //Start a conversation
-          await prisma.user.update({
-            where: { snowflake },
-            data: {
-              convoWithId: null,
-              seekingSince: new Date(),
-              greeting: message.content,
-            },
-          });
-          await SendEmbed(
-            message.channel,
-            'Waiting for a partner match...',
-            { footer: true },
-            'Your message will be sent to them.\nTo cancel, use `/stop`.',
-          );
-        }
+        await FindConvo(user, message);
       }
       if (forwardResult === 'Partner left') {
         //End conversation
@@ -322,20 +389,8 @@ async function MakeContext() {
       }
     },
     async HandleInteractionCreate(interaction: Interaction<CacheType>) {
-      if (!interaction.isCommand()) return;
-      const { commandName, channel } = interaction;
-      const user = await TouchUser(interaction.user);
-      if (!channel) return;
-      if (channel.type !== ChannelType.DM) {
-        await interaction.reply({
-          content: 'Please use this command in a DM.',
-          ephemeral: true,
-        });
-        return;
-      }
-      HandlePotentialCommand(commandName, user, async x => {
-        await interaction.reply(x);
-      });
+      if (interaction.isCommand()) await HandleCommandInteraction(interaction);
+      if (interaction.isButton()) await HandleButtonInteraction(interaction);
     },
     async HandleTypingStart({ channel, user: dUser }: Typing) {
       if (cacheHas(channel.id) || dUser.bot || !dUser.tag) return;
@@ -390,6 +445,10 @@ async function main() {
       name: 'block',
       description: 'Disconnect and never connect to this partner again',
     });
+    client.application?.commands.create({
+      name: 'gender',
+      description: 'Set your gender and gender preferences',
+    });
 
     client.on('messageCreate', ctx.HandleMessageCreate);
     client.on('interactionCreate', ctx.HandleInteractionCreate);
@@ -412,10 +471,10 @@ main()
   });
 
 //TODO: Announce function
-//TODO: Message guild newcomers with introduction
-//TODO: Gender match (with buttons)
-//TODO: Probe for user reachability
+//TODO: "why not join X while you wait?"
+//Release!
+//TODO: Gender change cooldown
 //TODO: Prevent consecutive convo with same user
 //TODO: Estimated wait time
 //TODO: X messages in last Y minutes (analyse msgToMsg)
-//TODO: "why not join X while you wait?"
+//TODO: Probe for user reachability

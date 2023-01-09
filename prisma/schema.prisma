@@ -1,10 +1,3 @@
-// select (X & (Y >> 4)) and (Y & (X >> 4));
-// default 0b11110001 241
-// M for F 0b01000010 66
-// F for M 0b00100100 36
-// F for ? 0b11110100 244
-// F for F 0b01000100 68
-
 datasource db {
   provider = "sqlite"
   url      = "file:./dev.db"
@@ -15,30 +8,30 @@ generator client {
 }
 
 model User {
-  id            Int       @id @default(autoincrement())
-  timestamp     DateTime  @default(now())
+  id           Int       @id @default(autoincrement())
+  timestamp    DateTime  @default(now())
   //Discord info
-  snowflake     BigInt    @unique
-  tag           String
+  snowflake    BigInt    @unique
+  tag          String
   //Gender
-  genderFlags   Int       @default(241) //?, M, F, other, seeking ?, seeking M, seeking F, seeking other
-  genderChanged DateTime?
+  sexFlags     Int       @default(7)
+  sexChanged   DateTime?
   //Reachability
-  accessible    Boolean   @default(true)
-  lastSeen      DateTime  @default(now())
+  accessible   Boolean   @default(true)
+  lastSeen     DateTime  @default(now())
   //Finding conversation
-  seekingSince  DateTime?
-  greeting      String?
+  seekingSince DateTime?
+  greeting     String?
   //In conversation
-  convoWith     User?     @relation("convoWith", fields: [convoWithId], references: [id])
-  convoWith_    User?     @relation("convoWith")
-  convoWithId   Int?      @unique
+  convoWith    User?     @relation("convoWith", fields: [convoWithId], references: [id])
+  convoWith_   User?     @relation("convoWith")
+  convoWithId  Int?      @unique
   //Stats
-  numMessage    Int       @default(0)
-  numConvo      Int       @default(0)
+  numMessage   Int       @default(0)
+  numConvo     Int       @default(0)
   //Blocking
-  blocker       Block[]   @relation("blocker")
-  blocked       Block[]   @relation("blocked")
+  blocker      Block[]   @relation("blocker")
+  blocked      Block[]   @relation("blocked")
 }
 
 model Block {
@@ -48,3 +41,9 @@ model Block {
   blockerId Int
   blockedId Int
 }
+
+//sexFlags 0 0 0             0 0 0
+// gender: M F !01  seeking: M F !01
+// default   0b000111 7
+// M for F   0b100010 34
+// M for any 0b100111 39
