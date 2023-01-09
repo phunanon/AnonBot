@@ -129,10 +129,10 @@ async function JoinConvo(
   partnerChannel: TextBasedChannel,
 ) {
   const { id, snowflake } = user;
-  const waitMin = Math.ceil(
+  let waitMin: number | string = Math.ceil(
     (new Date().getTime() - toJoin.seekingSince!.getTime()) / 1000 / 60,
   );
-  const plural = waitMin === 1 ? '' : 's';
+  waitMin = waitMin === 1 ? 'less than a minute' : `${waitMin} minutes`;
   //Generate stats
   const { gender: youGender, seeking: youSeeking } = GenderSeeking(user);
   const { gender: themGender, seeking: themSeeking } = GenderSeeking(toJoin);
@@ -150,11 +150,8 @@ async function JoinConvo(
     await MakeEmbed(
       'You have been matched with a partner!',
       { colour: 'Green', fields: name === 'you' ? yourFields : theirFields },
-      `${
-        name === 'you'
-          ? `They waited **${waitMin} minute${plural}** for this conversation.\n`
-          : ''
-      }To disconnect use \`/stop\`.
+      `It took **${waitMin}** for this match to be found.
+To disconnect use \`/stop\`.
 To disconnect and block them, use \`/block\`.
 To match particular genders, use \`/gender\`.`,
     );
