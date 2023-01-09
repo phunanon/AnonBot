@@ -4,7 +4,7 @@ import { Interaction, Message, PartialMessage, Typing } from 'discord.js';
 import { ColorResolvable, EmbedBuilder, APIEmbedField } from 'discord.js';
 import { TextBasedChannel, ChannelType, User as DUser } from 'discord.js';
 import { BaseMessageOptions, ClientEvents } from 'discord.js';
-import { ActionRowBuilder, ButtonBuilder } from 'discord.js';
+import { ActionRowBuilder, ButtonBuilder, GatewayIntentBits } from 'discord.js';
 import { CommandInteraction, ButtonInteraction } from 'discord.js';
 import { ChangeGender, GenderEmbed, GenderSeeking } from './gender';
 import { cacheAdd, cacheHas } from './cache';
@@ -16,6 +16,7 @@ const client = new Client({
     IntentsBitField.Flags.DirectMessages,
     IntentsBitField.Flags.DirectMessageTyping,
     IntentsBitField.Flags.DirectMessageReactions,
+    GatewayIntentBits.GuildMembers,
   ],
   partials: [Partials.Channel, Partials.Message],
 });
@@ -28,11 +29,13 @@ export async function MakeEmbed(
     fields = [],
     rows = [],
     footer,
+    content,
   }: {
     colour?: ColorResolvable;
     fields?: APIEmbedField[];
     rows?: ActionRowBuilder<ButtonBuilder>[];
     footer?: boolean;
+    content?: string;
   },
   body?: string,
 ) {
@@ -53,7 +56,7 @@ export async function MakeEmbed(
       text: `${numUser} strangers; ${numConvo} convos, ${numMessage} messages ever.`,
     });
   }
-  return { embeds: [embed], components: rows };
+  return { embeds: [embed], components: rows, content };
 }
 
 function UserStatsEmbedFields(user: User, name: string) {
@@ -148,7 +151,7 @@ async function JoinConvo(
       'You have been matched with a partner!',
       { colour: 'Green', fields: name === 'you' ? yourFields : theirFields },
       `${
-        name === 'them'
+        name === 'you'
           ? `They waited **${waitMin} minute${plural}** for this conversation.\n`
           : ''
       }To disconnect use \`/stop\`.
@@ -484,6 +487,26 @@ async function main() {
     client.on('messageDelete', ctx.HandleMessageUpdate);
     client.on('messageReactionAdd', ctx.HandleReactionAdd);
     client.on('messageReactionRemove', ctx.HandleReactionRemove);
+    client.on('guildMemberAdd', async member => {
+      const embed = [
+        'Welcome!',
+        { colour: '#00ff00', content: `<@${member.id}>` },
+        `I'm a bot that connects you to random people in DMs. Send me a message to start a conversation.
+Ensure that you have DMs enabled for this server and that you're not blocking me.`,
+      ] as const;
+      try {
+        await member.send(await MakeEmbed(...embed));
+      } catch (e) {
+        const sf = { '981158595339116564': '981158595339116567' }[
+          member.guild.id
+        ];
+        if (!sf) return;
+        const welcomeChannel = await member.guild.channels.fetch(sf);
+        if (!welcomeChannel?.isTextBased()) return;
+        await SendEmbed(welcomeChannel, ...embed);
+      }
+      await TouchUser(member.user);
+    });
     console.log('Ready.');
   });
   client.login(process.env.DISCORD_KEY);
