@@ -21,6 +21,7 @@ const client = new Client({
   partials: [Partials.Channel, Partials.Message],
 });
 const prisma = new PrismaClient();
+const historicalWaitTimes: number[] = [];
 
 export async function MakeEmbed(
   title: string,
@@ -122,6 +123,9 @@ async function EndConvo(user: User) {
   });
 }
 
+const Minutes = (min: number) =>
+  min === 1 ? 'less than a minute' : `${min} minutes`;
+
 async function JoinConvo(
   user: User,
   toJoin: User,
@@ -132,7 +136,9 @@ async function JoinConvo(
   let waitMin: number | string = Math.ceil(
     (new Date().getTime() - toJoin.seekingSince!.getTime()) / 1000 / 60,
   );
-  waitMin = waitMin === 1 ? 'less than a minute' : `${waitMin} minutes`;
+  historicalWaitTimes.push(waitMin);
+  if (historicalWaitTimes.length > 64) historicalWaitTimes.shift();
+  waitMin = Minutes(waitMin);
   //Generate stats
   const { gender: youGender, seeking: youSeeking } = GenderSeeking(user);
   const { gender: themGender, seeking: themSeeking } = GenderSeeking(toJoin);
@@ -248,6 +254,15 @@ async function MarkInaccessible(snowflake: bigint) {
   });
 }
 
+function EstWaitMessage() {
+  if (!historicalWaitTimes.length) return '';
+  const estWait = Math.round(
+    historicalWaitTimes.reduce((a, b) => a + b, 0) / historicalWaitTimes.length,
+  );
+  return `Estimated wait time: **${Minutes(estWait)}**.
+`;
+}
+
 async function FindConvo(user: User, message: Message) {
   const { id, snowflake, sexFlags } = user;
   while (true) {
@@ -290,11 +305,13 @@ async function FindConvo(user: User, message: Message) {
           greeting: message.content,
         },
       });
+      const estWaitMessage = EstWaitMessage();
       await SendEmbed(
         message.channel,
         'Waiting for a partner match...',
         { footer: true },
-        'Your message will be sent to them.\nTo cancel, use `/stop`.',
+        `${estWaitMessage}Your message will be sent to them.
+To cancel, use \`/stop\`.`,
       );
     }
     break;
@@ -485,14 +502,19 @@ async function main() {
     client.on('messageReactionAdd', ctx.HandleReactionAdd);
     client.on('messageReactionRemove', ctx.HandleReactionRemove);
     client.on('guildMemberAdd', async member => {
-      const embed = [
-        'Welcome!',
-        { colour: '#00ff00', content: `<@${member.id}>` },
-        `I'm a bot that connects you to random people in DMs. Send me a message to start a conversation.
-Ensure that you have DMs enabled for this server and that you're not blocking me.`,
-      ] as const;
+      const embed = (withBlockWarning: boolean) =>
+        [
+          'Welcome!',
+          { colour: '#00ff00', content: `<@${member.id}>` },
+          `I'm a bot that connects you to random people in DMs. Send me a message to start a conversation.${
+            withBlockWarning
+              ? `
+Ensure that you have DMs enabled for this server and that you're not blocking me.`
+              : ''
+          }`,
+        ] as const;
       try {
-        await member.send(await MakeEmbed(...embed));
+        await member.send(await MakeEmbed(...embed(false)));
       } catch (e) {
         const sf = { '981158595339116564': '981158595339116567' }[
           member.guild.id
@@ -500,11 +522,11 @@ Ensure that you have DMs enabled for this server and that you're not blocking me
         if (!sf) return;
         const welcomeChannel = await member.guild.channels.fetch(sf);
         if (!welcomeChannel?.isTextBased()) return;
-        await SendEmbed(welcomeChannel, ...embed);
+        await SendEmbed(welcomeChannel, ...embed(true));
       }
       await TouchUser(member.user);
     });
-    console.log('Ready.');
+    console.log(new Date().toLocaleTimeString(), 'Ready.');
   });
   client.login(process.env.DISCORD_KEY);
 }
@@ -521,6 +543,6 @@ main()
 //Release!
 //TODO: Gender change cooldown
 //TODO: Prevent consecutive convo with same user
-//TODO: Estimated wait time
 //TODO: X messages in last Y minutes (analyse msgToMsg)
 //TODO: Probe for user reachability
+//TODO: Message cooldown
