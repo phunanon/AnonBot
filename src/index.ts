@@ -62,15 +62,13 @@ export async function MakeEmbed(
 
 function UserStatsEmbedFields(user: User, name: string) {
   const ls = (n: number) => n.toLocaleString();
-  const numDays = Math.floor(
-    (Date.now() - user.timestamp.getTime()) / 86400000,
-  );
+  const numDays = Number((BigInt(Date.now()) - user.createdAt) / 86400000n);
   const numDaysStr =
     numDays < 1
       ? 'today'
       : numDays < 2
       ? 'yesterday'
-      : `${ls(Math.floor(numDays))} days ago`;
+      : `${ls(numDays)} days ago`;
   const numConvo = ls(user.numConvo);
   const numMsg = ls(user.numMessage);
   const value = `Joined ${numDaysStr}; ${numConvo} convos, ${numMsg} messages.`;
@@ -87,8 +85,8 @@ async function SendEmbed(
 async function TouchUser({ id, tag }: DUser) {
   return await prisma.user.upsert({
     where: { snowflake: BigInt(id) },
-    update: { lastSeen: new Date(), tag, accessible: true },
-    create: { tag, snowflake: BigInt(id) },
+    update: { lastSeenAt: new Date().getTime(), tag, accessible: true },
+    create: { createdAt: new Date().getTime(), tag, snowflake: BigInt(id) },
   });
 }
 
@@ -206,15 +204,23 @@ async function HandlePotentialCommand(
     }
   }
   if (commandName === 'block') {
-    await EndConvo(user);
-    await prisma.block.create({
-      data: { blockerId: user.id, blockedId: user.convoWithId! },
-    });
-    embed = await MakeEmbed(
-      'Disconnected and blocked',
-      { colour: '#00ffff' },
-      'You will never match with them again.\nSend a message to start a new conversation.',
-    );
+    if (user.convoWithId) {
+      await EndConvo(user);
+      await prisma.block.create({
+        data: { blockerId: user.id, blockedId: user.convoWithId },
+      });
+      embed = await MakeEmbed(
+        'Disconnected and blocked',
+        { colour: '#00ffff' },
+        'You will never match with them again.\nSend a message to start a new conversation.',
+      );
+    } else {
+      embed = await MakeEmbed(
+        'You are not in a conversation.',
+        { colour: 'Red' },
+        'Send a message to start a new conversation.',
+      );
+    }
   }
   if (commandName === 'gender') {
     embed = await GenderEmbed(user);
@@ -223,21 +229,26 @@ async function HandlePotentialCommand(
     const snowflakes = (
       await prisma.user.findMany({
         select: { snowflake: true },
+        where: { accessible: true },
       })
     ).map(x => x.snowflake);
-    const embed = new EmbedBuilder()
+    const announcement = new EmbedBuilder()
       .setColor('White')
       .setTitle('Bot announcement')
       .setDescription(arg);
     for (const snowflake of snowflakes) {
       try {
         const member = await client.users.fetch(`${snowflake}`);
+        console.log(`Sending announcement to ${member.tag}`);
         const channel = await member.createDM(true);
-        await channel.send({ embeds: [embed] });
+        await channel.send({ embeds: [announcement] });
       } catch (e) {
+        console.log("Couldn't send announcement to that member.");
         await MarkInaccessible(snowflake);
       }
     }
+    console.log('Announcement complete.');
+    embed = await MakeEmbed('Announcement complete.', { colour: 'Green' });
   }
   if (embed) await reply(embed);
 }
@@ -396,7 +407,7 @@ async function MakeContext() {
       const { snowflake } = user;
       if (/^(\/|!)/.test(message.content)) {
         const [_, commandName, arg] =
-          message.content.trim().match(/^(?:\/|!)(\w+)(?:\s(.+))?/) ?? [];
+          message.content.trim().match(/^(?:\/|!)(\w+)(?:\s([\s\S]+))?/) ?? [];
         const reply = async (x: BaseMessageOptions) => {
           await message.reply(x);
         };
@@ -502,6 +513,7 @@ async function main() {
     client.on('messageReactionAdd', ctx.HandleReactionAdd);
     client.on('messageReactionRemove', ctx.HandleReactionRemove);
     client.on('guildMemberAdd', async member => {
+      console.log(new Date().toLocaleTimeString(), 'guildMemberAdd', member.id);
       const embed = (withBlockWarning: boolean) =>
         [
           'Welcome!',
@@ -516,9 +528,10 @@ Ensure that you have DMs enabled for this server and that you're not blocking me
       try {
         await member.send(await MakeEmbed(...embed(false)));
       } catch (e) {
-        const sf = { '981158595339116564': '981158595339116567' }[
-          member.guild.id
-        ];
+        const sf = {
+          '981158595339116564': '981158595339116567',
+          '971115937258430506': '1062131286296248411',
+        }[member.guild.id];
         if (!sf) return;
         const welcomeChannel = await member.guild.channels.fetch(sf);
         if (!welcomeChannel?.isTextBased()) return;

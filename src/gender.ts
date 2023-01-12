@@ -109,12 +109,13 @@ export async function ChangeGender(
     }[command] || 0;
 
   let sexFlags = (newGender << 3) | (seeking ^ newSeeking);
-  if (!(sexFlags & 0b111)) sexFlags |= 0b111;
+  if (!(sexFlags & 0b111)) sexFlags |= 0b111; //If seeking none, seek all
+  if (!(sexFlags & 0b111000)) sexFlags |= 0b111000; //If no gender, all genders
 
   user.sexFlags = sexFlags;
 
   await prisma.user.update({
     where: { id: user.id },
-    data: { sexFlags, sexChanged: new Date() },
+    data: { sexFlags, sexChanged: new Date().getTime() },
   });
 }

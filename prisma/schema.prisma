@@ -9,16 +9,16 @@ generator client {
 
 model User {
   id           Int       @id @default(autoincrement())
-  timestamp    DateTime  @default(now())
+  createdAt    BigInt    @default(0)
   //Discord info
   snowflake    BigInt    @unique
   tag          String
   //Gender
-  sexFlags     Int       @default(7)
-  sexChanged   DateTime?
+  sexFlags     Int       @default(63)
+  sexChanged   BigInt?
   //Reachability
   accessible   Boolean   @default(true)
-  lastSeen     DateTime  @default(now())
+  lastSeenAt   BigInt    @default(0)
   //Finding conversation
   seekingSince DateTime?
   greeting     String?
@@ -44,6 +44,6 @@ model Block {
 
 //sexFlags 0 0 0             0 0 0
 // gender: M F !01  seeking: M F !01
-// default   0b000111 7
+// default   0b111111 63
 // M for F   0b100010 34
 // M for any 0b100111 39
