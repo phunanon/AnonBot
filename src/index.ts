@@ -225,31 +225,6 @@ async function HandlePotentialCommand(
   if (commandName === 'gender') {
     embed = await GenderEmbed(user);
   }
-  if (commandName === 'announce' && arg && [1, 2].includes(user.id)) {
-    const snowflakes = (
-      await prisma.user.findMany({
-        select: { snowflake: true },
-        where: { accessible: true },
-      })
-    ).map(x => x.snowflake);
-    const announcement = new EmbedBuilder()
-      .setColor('White')
-      .setTitle('Bot announcement')
-      .setDescription(arg);
-    for (const snowflake of snowflakes) {
-      try {
-        const member = await client.users.fetch(`${snowflake}`);
-        console.log(`Sending announcement to ${member.tag}`);
-        const channel = await member.createDM(true);
-        await channel.send({ embeds: [announcement] });
-      } catch (e) {
-        console.log("Couldn't send announcement to that member.");
-        await MarkInaccessible(snowflake);
-      }
-    }
-    console.log('Announcement complete.');
-    embed = await MakeEmbed('Announcement complete.', { colour: 'Green' });
-  }
   if (embed) await reply(embed);
 }
 
