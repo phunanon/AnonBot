@@ -266,7 +266,8 @@ async function FindConvo(user: User, message: Message) {
         SELECT * FROM "Block"
         WHERE blockerId = "User".id AND blockedId = ${id}
       )
-      AND (${sexFlags} & (sexFlags >> 3)) and (sexFlags & (${sexFlags} >> 3))
+      AND ((${sexFlags} & 7) & (sexFlags >> 3)) AND NOT (~(${sexFlags} & 7) & (sexFlags >> 3))
+      AND ((sexFlags & 7) & (${sexFlags} >> 3)) AND NOT (~(sexFlags & 7) & (${sexFlags} >> 3))
       ORDER BY seekingSince ASC
       LIMIT 1
     `;
@@ -276,6 +277,7 @@ async function FindConvo(user: User, message: Message) {
         const partnerChannel = await GetUserChannel(partner.id);
         await JoinConvo(user, partner, message, partnerChannel);
       } catch (e) {
+        console.log(e);
         await MarkInaccessible(partner.snowflake);
         partner = undefined;
         continue;
@@ -528,9 +530,8 @@ main()
   });
 
 //TODO: "why not join X while you wait?"
-//Release!
+//TODO: consume e.g. /gender male
 //TODO: Gender change cooldown
 //TODO: Prevent consecutive convo with same user
-//TODO: X messages in last Y minutes (analyse msgToMsg)
 //TODO: Probe for user reachability
 //TODO: Message cooldown

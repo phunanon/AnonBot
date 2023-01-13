@@ -42,8 +42,16 @@ model Block {
   blockedId Int
 }
 
-//sexFlags 0 0 0             0 0 0
-// gender: M F !01  seeking: M F !01
-// default   0b111111 63
-// M for F   0b100010 34
-// M for any 0b100111 39
+//sexFlags 0 0 0        0 0 0
+//           MFN4MFN
+// default   111 111 63
+// M   F     100 010 34
+// M MFN     100 111 39
+// F FN      010 011 19
+
+// Example:
+// var A = 0b100010;
+// var B = 0b010110;
+// ((A & 7) & (B >> 3)) && !(~(A & 7) & (B >> 3)) && ((B & 7) & (A >> 3)) && !(~(B & 7) & (A >> 3))
+
+
