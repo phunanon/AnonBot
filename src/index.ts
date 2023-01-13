@@ -242,9 +242,10 @@ async function MarkInaccessible(snowflake: bigint) {
 
 function EstWaitMessage() {
   if (!historicalWaitTimes.length) return '';
-  const estWait = Math.round(
-    historicalWaitTimes.reduce((a, b) => a + b, 0) / historicalWaitTimes.length,
-  );
+  //Median of historical wait times
+  const estWait = historicalWaitTimes.sort((a, b) => a - b)[
+    Math.floor(historicalWaitTimes.length / 2)
+  ]!;
   return `Estimated wait time: **${Minutes(estWait)}**.
 `;
 }
@@ -490,7 +491,11 @@ async function main() {
     client.on('messageReactionAdd', ctx.HandleReactionAdd);
     client.on('messageReactionRemove', ctx.HandleReactionRemove);
     client.on('guildMemberAdd', async member => {
-      console.log(new Date().toLocaleTimeString(), 'guildMemberAdd', member.id);
+      console.log(
+        new Date().toLocaleTimeString(),
+        'guildMemberAdd',
+        member.user.tag,
+      );
       const embed = (withBlockWarning: boolean) =>
         [
           'Welcome!',
@@ -529,6 +534,7 @@ main()
     process.exit(1);
   });
 
+//TODO: fix double connect bug
 //TODO: "why not join X while you wait?"
 //TODO: consume e.g. /gender male
 //TODO: Gender change cooldown
