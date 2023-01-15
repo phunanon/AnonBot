@@ -225,17 +225,26 @@ async function HandlePotentialCommand(
   if (commandName === 'gender') {
     embed = await GenderEmbed(user);
   }
+  if (
+    commandName === 'ban' &&
+    user.tag === 'Moderator#3922' &&
+    user.convoWithId
+  ) {
+    await MarkInaccessible(user.convoWithId, true);
+    embed = await MakeEmbed('Done.', { colour: 'Green' });
+  }
   if (embed) await reply(embed);
 }
 
-async function MarkInaccessible(snowflake: bigint) {
+async function MarkInaccessible(id: number, banned?: boolean) {
   await prisma.user.update({
-    where: { snowflake },
+    where: { id },
     data: {
       accessible: false,
       convoWithId: null,
       seekingSince: null,
       greeting: null,
+      banned,
     },
   });
 }
@@ -279,7 +288,7 @@ async function FindConvo(user: User, message: Message) {
         await JoinConvo(user, partner, message, partnerChannel);
       } catch (e) {
         console.log(e);
-        await MarkInaccessible(partner.snowflake);
+        await MarkInaccessible(partner.id);
         partner = undefined;
         continue;
       }
@@ -382,7 +391,11 @@ async function MakeContext() {
       if (message.channel.type !== ChannelType.DM) return;
       //Touch user
       const user = await TouchUser(message.author);
-      const { snowflake } = user;
+      const { snowflake, banned } = user;
+      if (banned) {
+        await message.reply('You are banned from using this bot.');
+        return;
+      }
       if (/^(\/|!)/.test(message.content)) {
         const [_, commandName, arg] =
           message.content.trim().match(/^(?:\/|!)(\w+)(?:\s([\s\S]+))?/) ?? [];
@@ -400,18 +413,15 @@ async function MakeContext() {
         await FindConvo(user, message);
       }
       if (forwardResult === 'Partner left') {
+        //Set partner as inaccessible
+        if (user.convoWithId !== null) {
+          await MarkInaccessible(user.convoWithId);
+        }
         //End conversation
         await prisma.user.update({
           where: { snowflake },
           data: { convoWithId: null },
         });
-        //Set partner as inaccessible
-        if (user.convoWithId !== null) {
-          await prisma.user.update({
-            where: { id: user.convoWithId },
-            data: { accessible: false, convoWithId: null },
-          });
-        }
         //Inform user
         await SendEmbed(
           message.channel,
@@ -534,6 +544,8 @@ main()
     process.exit(1);
   });
 
+//TODO: report feature
+//TODO: ban feature
 //TODO: fix double connect bug
 //TODO: "why not join X while you wait?"
 //TODO: consume e.g. /gender male
