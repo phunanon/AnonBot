@@ -3,7 +3,7 @@ import { Client, IntentsBitField, CacheType, Partials } from 'discord.js';
 import { Interaction, Message, PartialMessage, Typing } from 'discord.js';
 import { ColorResolvable, EmbedBuilder, APIEmbedField } from 'discord.js';
 import { TextBasedChannel, ChannelType, User as DUser } from 'discord.js';
-import { BaseMessageOptions, ClientEvents } from 'discord.js';
+import { BaseMessageOptions, ClientEvents, GuildMember } from 'discord.js';
 import { ActionRowBuilder, ButtonBuilder, GatewayIntentBits } from 'discord.js';
 import { CommandInteraction, ButtonInteraction } from 'discord.js';
 import { ChangeGender, GenderEmbed, GenderSeeking } from './gender';
@@ -22,6 +22,7 @@ const client = new Client({
 });
 const prisma = new PrismaClient();
 const historicalWaitTimes: number[] = [];
+let newConvoSemaphore = false;
 
 export async function MakeEmbed(
   title: string,
@@ -98,6 +99,7 @@ async function GetUserChannel(id: number) {
 
 /** Ends user's conversation, or if not in one stops seeking for one. */
 async function EndConvo(user: User) {
+  console.log(Date.now(), 'EndConvo', user.tag);
   if (user.convoWithId) {
     //Update partner seeking
     await prisma.user.update({
@@ -105,14 +107,16 @@ async function EndConvo(user: User) {
       data: { convoWithId: null, seekingSince: null },
     });
     //Inform partner
-    const partnerChannel = await GetUserChannel(user.convoWithId);
-    if (typeof partnerChannel !== 'string') {
+    try {
+      const partnerChannel = await GetUserChannel(user.convoWithId);
       await SendEmbed(
         partnerChannel,
         'Your partner left the conversation.',
         { colour: 'Red' },
         'Send a message to start a new conversation.',
       );
+    } catch (e) {
+      await MarkInaccessible(user.convoWithId);
     }
   }
   await prisma.user.update({
@@ -130,6 +134,7 @@ async function JoinConvo(
   greeting: Message,
   partnerChannel: TextBasedChannel,
 ) {
+  console.log(Date.now(), 'JoinConvo', user.tag, toJoin.tag);
   const { id, snowflake } = user;
   let waitMin: number | string = Math.ceil(
     (new Date().getTime() - toJoin.seekingSince!.getTime()) / 1000 / 60,
@@ -260,6 +265,10 @@ function EstWaitMessage() {
 }
 
 async function FindConvo(user: User, message: Message) {
+  while (newConvoSemaphore) {
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  newConvoSemaphore = true;
   const { id, snowflake, sexFlags } = user;
   while (true) {
     let [partner] = await prisma.$queryRaw<User[]>`
@@ -287,9 +296,8 @@ async function FindConvo(user: User, message: Message) {
         const partnerChannel = await GetUserChannel(partner.id);
         await JoinConvo(user, partner, message, partnerChannel);
       } catch (e) {
-        console.log(e);
+        console.log('JoinConvoFail', user.tag, partner.tag, e);
         await MarkInaccessible(partner.id);
-        partner = undefined;
         continue;
       }
     }
@@ -314,6 +322,7 @@ To cancel, use \`/stop\`.`,
     }
     break;
   }
+  newConvoSemaphore = false;
 }
 
 async function HandleCommandInteraction(interaction: CommandInteraction) {
@@ -472,35 +481,7 @@ async function MakeContext() {
         .find(x => x.emoji.name === emoji.name)
         ?.users.remove(client.user.id);
     },
-  };
-}
-
-async function main() {
-  console.log('Loading.');
-  client.once('ready', async () => {
-    const ctx = await MakeContext();
-
-    client.application?.commands.create({
-      name: 'stop',
-      description: 'Disconnect from partner / stop looking for a new one',
-    });
-    client.application?.commands.create({
-      name: 'block',
-      description: 'Disconnect and never connect to this partner again',
-    });
-    client.application?.commands.create({
-      name: 'gender',
-      description: 'Set your gender and gender preferences',
-    });
-
-    client.on('messageCreate', ctx.HandleMessageCreate);
-    client.on('interactionCreate', ctx.HandleInteractionCreate);
-    client.on('typingStart', ctx.HandleTypingStart);
-    client.on('messageUpdate', ctx.HandleMessageUpdate);
-    client.on('messageDelete', ctx.HandleMessageUpdate);
-    client.on('messageReactionAdd', ctx.HandleReactionAdd);
-    client.on('messageReactionRemove', ctx.HandleReactionRemove);
-    client.on('guildMemberAdd', async member => {
+    async HandleGuildMemberAdd(member: GuildMember) {
       console.log(
         new Date().toLocaleTimeString(),
         'guildMemberAdd',
@@ -530,7 +511,36 @@ Ensure that you have DMs enabled for this server and that you're not blocking me
         await SendEmbed(welcomeChannel, ...embed(true));
       }
       await TouchUser(member.user);
+    },
+  };
+}
+
+async function main() {
+  console.log('Loading.');
+  client.once('ready', async () => {
+    const ctx = await MakeContext();
+
+    client.application?.commands.create({
+      name: 'stop',
+      description: 'Disconnect from partner / stop looking for a new one',
     });
+    client.application?.commands.create({
+      name: 'block',
+      description: 'Disconnect and never connect to this partner again',
+    });
+    client.application?.commands.create({
+      name: 'gender',
+      description: 'Set your gender and gender preferences',
+    });
+
+    client.on('messageCreate', ctx.HandleMessageCreate);
+    client.on('interactionCreate', ctx.HandleInteractionCreate);
+    client.on('typingStart', ctx.HandleTypingStart);
+    client.on('messageUpdate', ctx.HandleMessageUpdate);
+    client.on('messageDelete', ctx.HandleMessageUpdate);
+    client.on('messageReactionAdd', ctx.HandleReactionAdd);
+    client.on('messageReactionRemove', ctx.HandleReactionRemove);
+    client.on('guildMemberAdd', ctx.HandleGuildMemberAdd);
     console.log(new Date().toLocaleTimeString(), 'Ready.');
   });
   client.login(process.env.DISCORD_KEY);
@@ -544,12 +554,14 @@ main()
     process.exit(1);
   });
 
+//TODO: Prevent consecutive convo with same user
 //TODO: report feature
 //TODO: ban feature
 //TODO: fix double connect bug
 //TODO: "why not join X while you wait?"
 //TODO: consume e.g. /gender male
 //TODO: Gender change cooldown
-//TODO: Prevent consecutive convo with same user
 //TODO: Probe for user reachability
 //TODO: Message cooldown
+//TODO: make SendEmbed mark as inaccessible, rather than all over the place
+//TODO: arbitrary: reach 512 lines total
