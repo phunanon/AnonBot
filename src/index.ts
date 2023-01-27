@@ -1,4 +1,9 @@
-import { PrismaClient, User } from '@prisma/client';
+const maintenanceMode = false;
+const maintenanceModeMessage = `The bot is currently in maintenance mode.
+Your conversation will continue as normal once work is complete.
+Please try again in five minutes.`;
+const mods = ['Moderator#3922', 'Auekha#4109'];
+import { PrismaClient, PrismaPromise, User } from '@prisma/client';
 import { Client, IntentsBitField, CacheType, Partials } from 'discord.js';
 import { Interaction, Message, PartialMessage, Typing } from 'discord.js';
 import { ColorResolvable, EmbedBuilder, APIEmbedField } from 'discord.js';
@@ -23,6 +28,24 @@ const client = new Client({
 const prisma = new PrismaClient();
 const historicalWaitTimes: number[] = [];
 let newConvoSemaphore = false;
+
+async function resilience<T>(f: () => Promise<T>) {
+  for (let i = 0; i < 5; i++) {
+    try {
+      return await f();
+    } catch (e) {
+      console.log(i, 'resilience', e);
+    }
+  }
+  //TODO: throw and inform user
+}
+
+const transaction = async (...actions: PrismaPromise<any>[]) =>
+  await resilience(async () => await prisma.$transaction(actions));
+
+const userUpdate = async (
+  params: Parameters<typeof prisma['user']['update']>[0],
+) => resilience(() => prisma.user.update(params));
 
 export async function MakeEmbed(
   title: string,
@@ -98,31 +121,37 @@ async function GetUserChannel(id: number) {
 }
 
 /** Ends user's conversation, or if not in one stops seeking for one. */
-async function EndConvo(user: User) {
-  console.log(Date.now(), 'EndConvo', user.tag);
+async function EndConvo(user: User, partnerInaccessible?: boolean) {
+  console.log(Date.now(), 'EndConvo ', user.tag);
   if (user.convoWithId) {
-    //Update partner seeking
-    await prisma.user.update({
-      where: { id: user.convoWithId },
-      data: { convoWithId: null, seekingSince: null },
-    });
-    //Inform partner
-    try {
-      const partnerChannel = await GetUserChannel(user.convoWithId);
-      await SendEmbed(
-        partnerChannel,
-        'Your partner left the conversation.',
-        { colour: 'Red' },
-        'Send a message to start a new conversation.',
-      );
-    } catch (e) {
+    //Update partners
+    const data = { convoWithId: null, seekingSince: null };
+    await transaction(
+      prisma.user.update({ where: { id: user.id }, data }),
+      prisma.user.update({ where: { id: user.convoWithId }, data }),
+    );
+    //Inform partner / mark them as inaccessible
+    if (partnerInaccessible) {
       await MarkInaccessible(user.convoWithId);
+    } else {
+      try {
+        const partnerChannel = await GetUserChannel(user.convoWithId);
+        await SendEmbed(
+          partnerChannel,
+          'Your partner left the conversation.',
+          { colour: 'Red' },
+          'Send a message to start a new conversation.',
+        );
+      } catch (e) {
+        await MarkInaccessible(user.convoWithId);
+      }
     }
+    return user.convoWithId;
+  } else {
+    //Stop seeking
+    const data = { seekingSince: null, greeting: null };
+    await userUpdate({ where: { id: user.id }, data });
   }
-  await prisma.user.update({
-    where: { id: user.id },
-    data: { convoWithId: null, seekingSince: null },
-  });
 }
 
 const Minutes = (min: number) =>
@@ -179,14 +208,16 @@ To match particular genders, use \`/gender\`.`,
     numConvo: { increment: 1 },
     numMessage: { increment: 1 },
   };
-  await prisma.user.update({
-    where: { snowflake },
-    data: { convoWithId: toJoin.id, ...updateData },
-  });
-  await prisma.user.update({
-    where: { id: toJoin.id },
-    data: { convoWithId: id, ...updateData },
-  });
+  await transaction(
+    prisma.user.update({
+      where: { snowflake },
+      data: { convoWithId: toJoin.id, prevWithId: toJoin.id, ...updateData },
+    }),
+    prisma.user.update({
+      where: { id: toJoin.id },
+      data: { convoWithId: id, prevWithId: user.id, ...updateData },
+    }),
+  );
 }
 
 async function HandlePotentialCommand(
@@ -197,22 +228,23 @@ async function HandlePotentialCommand(
 ) {
   let embed: Awaited<ReturnType<typeof MakeEmbed>> | null = null;
   if (commandName === 'stop') {
-    await EndConvo(user);
-    if (user.convoWithId === null) {
-      embed = await MakeEmbed('Okay.', { colour: 'DarkVividPink' });
-    } else {
-      embed = await MakeEmbed(
-        'You have disconnected',
-        { colour: '#ff00ff', footer: true },
-        'Send a message to start a new conversation.',
-      );
-    }
+    const wasInConvo = await EndConvo(user);
+    embed = await MakeEmbed(
+      wasInConvo
+        ? 'You have disconnected'
+        : user.seekingSince
+        ? 'You are no longer seeking'
+        : "You aren't in a conversation",
+      { colour: '#ff00ff', footer: true },
+      'Send a message to start a new conversation.',
+    );
   }
   if (commandName === 'block') {
-    if (user.convoWithId) {
-      await EndConvo(user);
+    console.log('Blocker', user.tag);
+    const wasInConvoWith = await EndConvo(user);
+    if (wasInConvoWith) {
       await prisma.block.create({
-        data: { blockerId: user.id, blockedId: user.convoWithId },
+        data: { blockerId: user.id, blockedId: wasInConvoWith },
       });
       embed = await MakeEmbed(
         'Disconnected and blocked',
@@ -230,28 +262,25 @@ async function HandlePotentialCommand(
   if (commandName === 'gender') {
     embed = await GenderEmbed(user);
   }
-  if (
-    commandName === 'ban' &&
-    user.tag === 'Moderator#3922' &&
-    user.convoWithId
-  ) {
-    await MarkInaccessible(user.convoWithId, true);
-    embed = await MakeEmbed('Done.', { colour: 'Green' });
+  if (commandName === 'ban' && user.tag === 'Moderator#3922') {
+    const wasInConvoWith = await EndConvo(user);
+    if (wasInConvoWith) {
+      await MarkInaccessible(wasInConvoWith, true);
+      embed = await MakeEmbed('Done.', { colour: 'Green' });
+    }
   }
   if (embed) await reply(embed);
 }
 
 async function MarkInaccessible(id: number, banned?: boolean) {
-  await prisma.user.update({
-    where: { id },
-    data: {
-      accessible: false,
-      convoWithId: null,
-      seekingSince: null,
-      greeting: null,
-      banned,
-    },
-  });
+  const data = {
+    accessible: false,
+    convoWithId: null,
+    seekingSince: null,
+    greeting: null,
+    banned,
+  };
+  await userUpdate({ where: { id }, data });
 }
 
 function EstWaitMessage() {
@@ -271,6 +300,7 @@ async function FindConvo(user: User, message: Message) {
   newConvoSemaphore = true;
   const { id, snowflake, sexFlags } = user;
   while (true) {
+    //TODO: prevent consecutives: AND prevWithId != ${id}
     let [partner] = await prisma.$queryRaw<User[]>`
       SELECT * FROM "User"
       WHERE accessible = true
@@ -302,8 +332,8 @@ async function FindConvo(user: User, message: Message) {
       }
     }
     if (!partner) {
-      //Start a conversation
-      await prisma.user.update({
+      //Start seeking
+      await userUpdate({
         where: { snowflake },
         data: {
           convoWithId: null,
@@ -379,7 +409,7 @@ async function MakeContext() {
         reply,
       });
       //Increment message count
-      await prisma.user.update({
+      await userUpdate({
         where: { id },
         data: { numMessage: { increment: 1 } },
       });
@@ -398,10 +428,14 @@ async function MakeContext() {
     async HandleMessageCreate(message: Message) {
       if (message.author.bot) return;
       if (message.channel.type !== ChannelType.DM) return;
+      if (maintenanceMode && !mods.includes(message.author.tag)) {
+        await message.reply(maintenanceModeMessage);
+        console.log('Maintenance mode informed', message.author.tag);
+        return;
+      }
       //Touch user
       const user = await TouchUser(message.author);
-      const { snowflake, banned } = user;
-      if (banned) {
+      if (user.banned) {
         await message.reply('You are banned from using this bot.');
         return;
       }
@@ -422,25 +456,23 @@ async function MakeContext() {
         await FindConvo(user, message);
       }
       if (forwardResult === 'Partner left') {
-        //Set partner as inaccessible
-        if (user.convoWithId !== null) {
-          await MarkInaccessible(user.convoWithId);
-        }
         //End conversation
-        await prisma.user.update({
-          where: { snowflake },
-          data: { convoWithId: null },
-        });
+        await EndConvo(user);
         //Inform user
         await SendEmbed(
           message.channel,
           'Sorry, but your partner left the conversation.',
-          { colour: '#ff0000' },
+          { colour: '#ff4444' },
           'Send a message to start a new conversation.',
         );
       }
     },
     async HandleInteractionCreate(interaction: Interaction<CacheType>) {
+      if (maintenanceMode && !mods.includes(interaction.user.tag)) {
+        await interaction.channel?.send(maintenanceModeMessage);
+        console.log('Maintenance mode informed', interaction.user.tag);
+        return;
+      }
       if (interaction.isCommand()) await HandleCommandInteraction(interaction);
       if (interaction.isButton()) await HandleButtonInteraction(interaction);
     },
@@ -554,14 +586,13 @@ main()
     process.exit(1);
   });
 
-//TODO: Prevent consecutive convo with same user
+//TODO: prevent mass join-leave sprees
 //TODO: report feature
 //TODO: ban feature
-//TODO: fix double connect bug
 //TODO: "why not join X while you wait?"
 //TODO: consume e.g. /gender male
 //TODO: Gender change cooldown
 //TODO: Probe for user reachability
 //TODO: Message cooldown
 //TODO: make SendEmbed mark as inaccessible, rather than all over the place
-//TODO: arbitrary: reach 512 lines total
+//TODO: convos in last 24h

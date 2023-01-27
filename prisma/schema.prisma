@@ -14,13 +14,14 @@ model User {
   //Discord info
   snowflake    BigInt    @unique
   tag          String
-  //Gender
+  //Gender (MFN4MFN)
   sexFlags     Int       @default(63)
   sexChanged   BigInt?
   //Reachability
   accessible   Boolean   @default(true)
   lastSeenAt   BigInt    @default(0)
   //Finding conversation
+  prevWithId   Int?
   seekingSince DateTime?
   greeting     String?
   //In conversation
@@ -42,17 +43,3 @@ model Block {
   blockerId Int
   blockedId Int
 }
-
-//sexFlags 0 0 0        0 0 0
-//           MFN4MFN
-// default   111 111 63
-// M   F     100 010 34
-// M MFN     100 111 39
-// F FN      010 011 19
-
-// Example:
-// var A = 0b100010;
-// var B = 0b010110;
-// ((A & 7) & (B >> 3)) && !(~(A & 7) & (B >> 3)) && ((B & 7) & (A >> 3)) && !(~(B & 7) & (A >> 3))
-
-
