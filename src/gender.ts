@@ -6,24 +6,24 @@ export function GenderSeeking({ sexFlags }: User) {
   const genderFlags = (sexFlags & 0b111000) >> 3;
   const seekFlags = sexFlags & 0b111;
   const gender = {
-    0b100: 'Male' as const,
-    0b010: 'Female' as const,
-    0b001: 'Non-binary' as const,
+    0b100: 'male' as const,
+    0b010: 'female' as const,
+    0b001: 'non-binary' as const,
   }[genderFlags];
-  let seeking: ('Anyone' | 'Non-binary' | 'Female' | 'Male')[] = [];
-  if (seekFlags & 0b100) seeking.push('Male');
-  if (seekFlags & 0b010) seeking.push('Female');
-  if (seekFlags & 0b001) seeking.push('Non-binary');
-  if (seeking.length === 3) seeking = ['Anyone'];
+  let seeking: ('anyone' | 'non-binary' | 'female' | 'male')[] = [];
+  if (seekFlags & 0b100) seeking.push('male');
+  if (seekFlags & 0b010) seeking.push('female');
+  if (seekFlags & 0b001) seeking.push('non-binary');
+  if (seeking.length === 3) seeking = ['anyone'];
   return { gender, seeking };
 }
 
 export function GenderButtonRows(user: User) {
   const { gender, seeking } = GenderSeeking(user);
-  const seekingAnyone = seeking.includes('Anyone');
-  const seekingMale = seeking.includes('Male') || seekingAnyone;
-  const seekingFemale = seeking.includes('Female') || seekingAnyone;
-  const seekingNonbinary = seeking.includes('Non-binary') || seekingAnyone;
+  const seekingAnyone = seeking.includes('anyone');
+  const seekingMale = seeking.includes('male') || seekingAnyone;
+  const seekingFemale = seeking.includes('female') || seekingAnyone;
+  const seekingNonbinary = seeking.includes('non-binary') || seekingAnyone;
   const b = (x: boolean) => (x ? ButtonStyle.Danger : ButtonStyle.Success);
   return [
     new ActionRowBuilder<ButtonBuilder>().addComponents(
@@ -31,17 +31,17 @@ export function GenderButtonRows(user: User) {
         .setCustomId('male')
         .setLabel("I'm male")
         .setStyle(ButtonStyle.Primary)
-        .setDisabled(gender === 'Male'),
+        .setDisabled(gender === 'male'),
       new ButtonBuilder()
         .setCustomId('female')
         .setLabel("I'm female")
         .setStyle(ButtonStyle.Primary)
-        .setDisabled(gender === 'Female'),
+        .setDisabled(gender === 'female'),
       new ButtonBuilder()
         .setCustomId('nonbinary')
         .setLabel("I'm non-binary")
         .setStyle(ButtonStyle.Primary)
-        .setDisabled(gender === 'Non-binary'),
+        .setDisabled(gender === 'non-binary'),
       new ButtonBuilder()
         .setCustomId('nosay')
         .setLabel("I'd rather not say")

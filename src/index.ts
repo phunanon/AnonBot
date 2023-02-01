@@ -36,8 +36,23 @@ async function resilience<T>(f: () => Promise<T>) {
     } catch (e) {
       console.log(i, 'resilience', e);
     }
+    //Sleep 100ms
+    await new Promise(resolve => setTimeout(resolve, 100));
   }
   //TODO: throw and inform user
+}
+
+function failable<P extends any[], U>(f: (...args: P) => Promise<U>) {
+  return <F>(onFail?: () => Promise<F>) =>
+    async (...params: P): Promise<U | Awaited<F> | undefined> => {
+      try {
+        return await f(...params);
+      } catch (e) {
+        console.log('failable', e);
+        const x = await onFail?.();
+        return x;
+      }
+    };
 }
 
 const transaction = async (...actions: PrismaPromise<any>[]) =>
@@ -47,15 +62,21 @@ const userUpdate = async (
   params: Parameters<typeof prisma['user']['update']>[0],
 ) => resilience(() => prisma.user.update(params));
 
+async function MarkInaccessible(id: number, banned?: boolean) {
+  const data = {
+    accessible: false,
+    seekingSince: null,
+    greeting: null,
+    banned,
+  };
+  await userUpdate({ where: { id }, data });
+}
+
+const Inaccessibility = (id: number) => () => MarkInaccessible(id);
+
 export async function MakeEmbed(
   title: string,
-  {
-    colour = '#0099ff',
-    fields = [],
-    rows = [],
-    footer,
-    content,
-  }: {
+  params: {
     colour?: ColorResolvable;
     fields?: APIEmbedField[];
     rows?: ActionRowBuilder<ButtonBuilder>[];
@@ -64,9 +85,10 @@ export async function MakeEmbed(
   },
   body?: string,
 ) {
+  const { colour = '#0099ff', fields, rows = [], footer, content } = params;
   const embed = new EmbedBuilder().setColor(colour).setTitle(title);
   if (body) embed.setDescription(body);
-  fields.forEach(x => embed.addFields(x));
+  fields?.forEach(x => embed.addFields(x));
   if (footer) {
     const numUser = (
       await prisma.user.count({ where: { accessible: true } })
@@ -99,65 +121,69 @@ function UserStatsEmbedFields(user: User, name: string) {
   return { name, value };
 }
 
-async function SendEmbed(
-  channel: TextBasedChannel,
-  ...args: Parameters<typeof MakeEmbed>
-) {
-  return await channel.send(await MakeEmbed(...args));
-}
+const SendEmbed = failable(
+  async (channel: TextBasedChannel, ...args: Parameters<typeof MakeEmbed>) =>
+    await channel.send(await MakeEmbed(...args)),
+);
 
 async function TouchUser({ id, tag }: DUser) {
-  return await prisma.user.upsert({
-    where: { snowflake: BigInt(id) },
-    update: { lastSeenAt: new Date().getTime(), tag, accessible: true },
-    create: { createdAt: new Date().getTime(), tag, snowflake: BigInt(id) },
-  });
+  return await resilience(
+    async () =>
+      await prisma.user.upsert({
+        where: { snowflake: BigInt(id) },
+        update: { lastSeenAt: new Date().getTime(), tag, accessible: true },
+        create: { createdAt: new Date().getTime(), tag, snowflake: BigInt(id) },
+      }),
+  );
 }
 
-async function GetUserChannel(id: number) {
+const GetUserChannel = failable(async (id: number) => {
   const { snowflake } = await prisma.user.findFirstOrThrow({ where: { id } });
   const member = await client.users.fetch(`${snowflake}`);
   return await member.createDM(true);
-}
+});
 
 /** Ends user's conversation, or if not in one stops seeking for one. */
-async function EndConvo(user: User, partnerInaccessible?: boolean) {
-  console.log(Date.now(), 'EndConvo ', user.tag);
-  if (user.convoWithId) {
+async function EndConvo(
+  { tag, id, convoWithId }: User,
+  partnerInaccessible = false,
+) {
+  console.log(Date.now(), 'EndConvo ', tag, id, convoWithId);
+  if (convoWithId) {
     //Update partners
     const data = { convoWithId: null, seekingSince: null };
     await transaction(
-      prisma.user.update({ where: { id: user.id }, data }),
-      prisma.user.update({ where: { id: user.convoWithId }, data }),
+      prisma.user.update({ where: { id }, data }),
+      prisma.user.update({ where: { id: convoWithId }, data }),
     );
-    //Inform partner / mark them as inaccessible
+    //Inform partner
+    const onFail = Inaccessibility(id);
     if (partnerInaccessible) {
-      await MarkInaccessible(user.convoWithId);
+      await MarkInaccessible(convoWithId);
     } else {
-      try {
-        const partnerChannel = await GetUserChannel(user.convoWithId);
-        await SendEmbed(
+      const partnerChannel = await GetUserChannel(onFail)(convoWithId);
+      if (partnerChannel) {
+        await SendEmbed(onFail)(
           partnerChannel,
           'Your partner left the conversation.',
           { colour: 'Red' },
           'Send a message to start a new conversation.',
         );
-      } catch (e) {
-        await MarkInaccessible(user.convoWithId);
       }
     }
-    return user.convoWithId;
+    return convoWithId;
   } else {
     //Stop seeking
     const data = { seekingSince: null, greeting: null };
-    await userUpdate({ where: { id: user.id }, data });
+    await userUpdate({ where: { id }, data });
   }
 }
 
 const Minutes = (min: number) =>
   min === 1 ? 'less than a minute' : `${min} minutes`;
 
-async function JoinConvo(
+const JoinConvo = failable(_JoinConvo);
+async function _JoinConvo(
   user: User,
   toJoin: User,
   greeting: Message,
@@ -223,7 +249,9 @@ To match particular genders, use \`/gender\`.`,
 async function HandlePotentialCommand(
   commandName: string,
   user: User,
-  reply: (message: BaseMessageOptions) => Promise<void>,
+  reply: (
+    onFail?: () => Promise<void>,
+  ) => (message: BaseMessageOptions) => Promise<void>,
   arg?: string,
 ) {
   let embed: Awaited<ReturnType<typeof MakeEmbed>> | null = null;
@@ -240,7 +268,7 @@ async function HandlePotentialCommand(
     );
   }
   if (commandName === 'block') {
-    console.log('Blocker', user.tag);
+    //console.log('Blocker', user.tag);
     const wasInConvoWith = await EndConvo(user);
     if (wasInConvoWith) {
       await prisma.block.create({
@@ -269,18 +297,7 @@ async function HandlePotentialCommand(
       embed = await MakeEmbed('Done.', { colour: 'Green' });
     }
   }
-  if (embed) await reply(embed);
-}
-
-async function MarkInaccessible(id: number, banned?: boolean) {
-  const data = {
-    accessible: false,
-    convoWithId: null,
-    seekingSince: null,
-    greeting: null,
-    banned,
-  };
-  await userUpdate({ where: { id }, data });
+  if (embed) await reply(Inaccessibility(user.id))(embed);
 }
 
 function EstWaitMessage() {
@@ -298,10 +315,15 @@ async function FindConvo(user: User, message: Message) {
     await new Promise(resolve => setTimeout(resolve, 100));
   }
   newConvoSemaphore = true;
-  const { id, snowflake, sexFlags } = user;
+  const { id, snowflake, sexFlags, convoWithId } = user;
+  if (convoWithId !== null) {
+    console.log("Yep, they're in a convo already!");
+    newConvoSemaphore = false;
+    return;
+  }
   while (true) {
     //TODO: prevent consecutives: AND prevWithId != ${id}
-    let [partner] = await prisma.$queryRaw<User[]>`
+    const [partner] = await prisma.$queryRaw<User[]>`
       SELECT * FROM "User"
       WHERE accessible = true
       AND convoWithId IS NULL
@@ -321,34 +343,39 @@ async function FindConvo(user: User, message: Message) {
       LIMIT 1
     `;
     if (partner) {
-      //Attempt to join a conversation (fails if partner left after seeking)
-      try {
-        const partnerChannel = await GetUserChannel(partner.id);
-        await JoinConvo(user, partner, message, partnerChannel);
-      } catch (e) {
-        console.log('JoinConvoFail', user.tag, partner.tag, e);
+      let failed = false;
+      const onFail = async () => {
+        await EndConvo(user); //For good measure
         await MarkInaccessible(partner.id);
-        continue;
-      }
+        failed = true;
+      };
+      //Attempt to join a conversation (fails if partner left after seeking)
+      const partnerChannel = await GetUserChannel(onFail)(partner.id);
+      if (!partnerChannel) continue;
+      await JoinConvo(onFail)(user, partner, message, partnerChannel);
+      if (failed) continue;
     }
     if (!partner) {
       //Start seeking
-      await userUpdate({
-        where: { snowflake },
-        data: {
-          convoWithId: null,
-          seekingSince: new Date(),
-          greeting: message.content,
-        },
-      });
+      if (Number.isInteger(Math.log2(user?.numConvo ?? 0))) {
+        try {
+          await message.channel.send(
+            'Why not join our hang-out while you wait?\nhttps://discord.gg/QY5QNUCms7',
+          );
+        } catch (e) {}
+      }
       const estWaitMessage = EstWaitMessage();
-      await SendEmbed(
+      await SendEmbed(Inaccessibility(user.id))(
         message.channel,
         'Waiting for a partner match...',
         { footer: true },
         `${estWaitMessage}Your message will be sent to them.
 To cancel, use \`/stop\`.`,
       );
+      await userUpdate({
+        where: { snowflake },
+        data: { seekingSince: new Date(), greeting: message.content },
+      });
     }
     break;
   }
@@ -358,7 +385,7 @@ To cancel, use \`/stop\`.`,
 async function HandleCommandInteraction(interaction: CommandInteraction) {
   const { commandName, channel } = interaction;
   const user = await TouchUser(interaction.user);
-  if (!channel) return;
+  if (!channel || !user) return;
   if (channel.type !== ChannelType.DM) {
     await interaction.reply({
       content: 'Please use this command in a DM.',
@@ -366,14 +393,19 @@ async function HandleCommandInteraction(interaction: CommandInteraction) {
     });
     return;
   }
-  await HandlePotentialCommand(commandName, user, async x => {
-    await interaction.reply(x);
-  });
+  await HandlePotentialCommand(
+    commandName,
+    user,
+    failable(async x => {
+      await interaction.reply(x);
+    }),
+  );
 }
 
 async function HandleButtonInteraction(interaction: ButtonInteraction) {
   const { customId } = interaction;
   const user = await TouchUser(interaction.user);
+  if (!user) return;
   await ChangeGender(prisma, user, customId);
   await interaction.update(await GenderEmbed(user));
 }
@@ -400,7 +432,9 @@ async function MakeContext() {
   async function ForwardMessage(message: Message, { id, convoWithId }: User) {
     try {
       if (convoWithId === null) return 'No convo';
-      const partnerChannel = await GetUserChannel(convoWithId);
+      const onFail = Inaccessibility(convoWithId);
+      const partnerChannel = await GetUserChannel(onFail)(convoWithId);
+      if (!partnerChannel) return 'Partner left';
       const reply = await ResolveReply(message);
       const partnerMessage = await partnerChannel.send({
         content: message.content,
@@ -435,6 +469,7 @@ async function MakeContext() {
       }
       //Touch user
       const user = await TouchUser(message.author);
+      if (!user) return;
       if (user.banned) {
         await message.reply('You are banned from using this bot.');
         return;
@@ -442,9 +477,9 @@ async function MakeContext() {
       if (/^(\/|!)/.test(message.content)) {
         const [_, commandName, arg] =
           message.content.trim().match(/^(?:\/|!)(\w+)(?:\s([\s\S]+))?/) ?? [];
-        const reply = async (x: BaseMessageOptions) => {
+        const reply = failable(async (x: BaseMessageOptions) => {
           await message.reply(x);
-        };
+        });
         if (commandName)
           await HandlePotentialCommand(commandName, user, reply, arg);
         return;
@@ -457,9 +492,9 @@ async function MakeContext() {
       }
       if (forwardResult === 'Partner left') {
         //End conversation
-        await EndConvo(user);
+        await EndConvo(user, true);
         //Inform user
-        await SendEmbed(
+        await SendEmbed(() => MarkInaccessible(user.id))(
           message.channel,
           'Sorry, but your partner left the conversation.',
           { colour: '#ff4444' },
@@ -479,11 +514,11 @@ async function MakeContext() {
     async HandleTypingStart({ channel, user: dUser }: Typing) {
       if (cacheHas(channel.id) || dUser.bot || !dUser.tag) return;
       const user = await TouchUser(dUser);
-      if (!user.convoWithId) return;
+      if (!user?.convoWithId) return;
       cacheAdd(channel.id, 5_000);
-      const partnerChannel = await GetUserChannel(user.convoWithId);
-      if (typeof partnerChannel !== 'string')
-        await partnerChannel?.sendTyping();
+      const onFail = Inaccessibility(user.convoWithId);
+      const partnerChannel = await GetUserChannel(onFail)(user.convoWithId);
+      await partnerChannel?.sendTyping();
     },
     async HandleMessageUpdate(
       oldMessage: Message<boolean> | PartialMessage,
@@ -501,7 +536,9 @@ async function MakeContext() {
       if (user.bot) return;
       const partnerMessage = await GetM2M(message);
       if (!partnerMessage) return;
-      await partnerMessage.react(emoji);
+      try {
+        await partnerMessage.react(emoji);
+      } catch (e) {} //Custom emoji, invalid emoji, etc.
     },
     async HandleReactionRemove(
       ...[{ message, emoji }, user]: ClientEvents['messageReactionRemove']
@@ -514,11 +551,11 @@ async function MakeContext() {
         ?.users.remove(client.user.id);
     },
     async HandleGuildMemberAdd(member: GuildMember) {
-      console.log(
-        new Date().toLocaleTimeString(),
-        'guildMemberAdd',
-        member.user.tag,
-      );
+      // console.log(
+      //   new Date().toLocaleTimeString(),
+      //   'guildMemberAdd',
+      //   member.user.tag,
+      // );
       const embed = (withBlockWarning: boolean) =>
         [
           'Welcome!',
@@ -535,12 +572,12 @@ Ensure that you have DMs enabled for this server and that you're not blocking me
       } catch (e) {
         const sf = {
           '981158595339116564': '981158595339116567',
-          '971115937258430506': '1062131286296248411',
+          //'971115937258430506': '1062131286296248411',
         }[member.guild.id];
         if (!sf) return;
         const welcomeChannel = await member.guild.channels.fetch(sf);
         if (!welcomeChannel?.isTextBased()) return;
-        await SendEmbed(welcomeChannel, ...embed(true));
+        await SendEmbed()(welcomeChannel, ...embed(true));
       }
       await TouchUser(member.user);
     },
@@ -586,13 +623,12 @@ main()
     process.exit(1);
   });
 
+//TODO: auto-ban if user is blocked more than once per ten conversations, over twenty conversations
 //TODO: prevent mass join-leave sprees
 //TODO: report feature
 //TODO: ban feature
-//TODO: "why not join X while you wait?"
 //TODO: consume e.g. /gender male
 //TODO: Gender change cooldown
 //TODO: Probe for user reachability
 //TODO: Message cooldown
-//TODO: make SendEmbed mark as inaccessible, rather than all over the place
 //TODO: convos in last 24h

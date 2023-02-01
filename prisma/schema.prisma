@@ -37,9 +37,10 @@ model User {
 }
 
 model Block {
-  id        Int  @id @default(autoincrement())
-  blocker   User @relation("blocker", fields: [blockerId], references: [id])
-  blocked   User @relation("blocked", fields: [blockedId], references: [id])
+  id        Int      @id @default(autoincrement())
+  createdAt DateTime @default(now())
+  blocker   User     @relation("blocker", fields: [blockerId], references: [id])
+  blocked   User     @relation("blocked", fields: [blockedId], references: [id])
   blockerId Int
   blockedId Int
 }
