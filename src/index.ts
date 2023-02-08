@@ -26,8 +26,15 @@ const client = new Client({
   partials: [Partials.Channel, Partials.Message],
 });
 const prisma = new PrismaClient();
-const historicalWaitTimes: number[] = [];
+const historicalConvos: Date[] = [];
 let newConvoSemaphore = false;
+
+const trimHistoricalConvos = () => {
+  const yesterday = new Date(new Date().getTime() - 24 * 60 * 60 * 1000);
+  while (historicalConvos.length && historicalConvos[0]! < yesterday) {
+    historicalConvos.shift();
+  }
+};
 
 async function resilience<T>(f: () => Promise<T>) {
   for (let i = 0; i < 5; i++) {
@@ -89,18 +96,30 @@ export async function MakeEmbed(
   const embed = new EmbedBuilder().setColor(colour).setTitle(title);
   if (body) embed.setDescription(body);
   fields?.forEach(x => embed.addFields(x));
+  //TODO: make failable
   if (footer) {
-    const numUser = (
-      await prisma.user.count({ where: { accessible: true } })
-    ).toLocaleString();
-    const numConvo = (
-      await prisma.user.aggregate({ _sum: { numConvo: true } })
-    )._sum.numConvo!.toLocaleString();
-    const numMessage = (
-      await prisma.user.aggregate({ _sum: { numMessage: true } })
-    )._sum.numMessage!.toLocaleString();
+    const {
+      _count: { accessible: nu },
+      _sum: { numConvo: nc, numMessage: nm },
+    } = await prisma.user.aggregate({
+      _count: { accessible: true },
+      _sum: { numConvo: true, numMessage: true },
+    });
+    const [numUser, numConvo, numMessage] = [nu, nc, nm].map(
+      x => x?.toLocaleString() ?? '--',
+    );
+    const recentConvos = () => {
+      trimHistoricalConvos();
+      const [earliestConvo] = historicalConvos;
+      if (!earliestConvo) return '';
+      const numConvoRecently = historicalConvos.length;
+      const numConvoDurationHours = Math.ceil(
+        (Date.now() - earliestConvo.getTime()) / 3600000,
+      );
+      return `\n${numConvoRecently} convos in the last ${numConvoDurationHours} hours.`;
+    };
     embed.setFooter({
-      text: `${numUser} strangers; ${numConvo} convos, ${numMessage} messages ever.`,
+      text: `${numUser} strangers; ${numConvo} convos, ${numMessage} messages ever.${recentConvos()}`,
     });
   }
   return { embeds: [embed], components: rows, content };
@@ -143,6 +162,7 @@ const GetUserChannel = failable(async (id: number) => {
   return await member.createDM(true);
 });
 
+//TODO: make failable
 /** Ends user's conversation, or if not in one stops seeking for one. */
 async function EndConvo(
   { tag, id, convoWithId }: User,
@@ -166,7 +186,7 @@ async function EndConvo(
         await SendEmbed(onFail)(
           partnerChannel,
           'Your partner left the conversation.',
-          { colour: 'Red' },
+          { colour: 'Red', footer: true },
           'Send a message to start a new conversation.',
         );
       }
@@ -182,6 +202,9 @@ async function EndConvo(
 const Minutes = (min: number) =>
   min === 1 ? 'less than a minute' : `${min} minutes`;
 
+const minutesSince = (date: Date) =>
+  (new Date().getTime() - date.getTime()) / 1000 / 60;
+
 const JoinConvo = failable(_JoinConvo);
 async function _JoinConvo(
   user: User,
@@ -191,12 +214,7 @@ async function _JoinConvo(
 ) {
   console.log(Date.now(), 'JoinConvo', user.tag, toJoin.tag);
   const { id, snowflake } = user;
-  let waitMin: number | string = Math.ceil(
-    (new Date().getTime() - toJoin.seekingSince!.getTime()) / 1000 / 60,
-  );
-  historicalWaitTimes.push(waitMin);
-  if (historicalWaitTimes.length > 64) historicalWaitTimes.shift();
-  waitMin = Minutes(waitMin);
+  let waitMin = Minutes(Math.ceil(minutesSince(toJoin.seekingSince!)));
   //Generate stats
   const { gender: youGender, seeking: youSeeking } = GenderSeeking(user);
   const { gender: themGender, seeking: themSeeking } = GenderSeeking(toJoin);
@@ -244,6 +262,9 @@ To match particular genders, use \`/gender\`.`,
       data: { convoWithId: id, prevWithId: user.id, ...updateData },
     }),
   );
+  //Cache time
+  historicalConvos.push(new Date());
+  trimHistoricalConvos();
 }
 
 async function HandlePotentialCommand(
@@ -263,7 +284,7 @@ async function HandlePotentialCommand(
         : user.seekingSince
         ? 'You are no longer seeking'
         : "You aren't in a conversation",
-      { colour: '#ff00ff', footer: true },
+      { colour: '#ff00ff', footer: !!wasInConvo },
       'Send a message to start a new conversation.',
     );
   }
@@ -271,6 +292,7 @@ async function HandlePotentialCommand(
     //console.log('Blocker', user.tag);
     const wasInConvoWith = await EndConvo(user);
     if (wasInConvoWith) {
+      //TODO: make failable
       await prisma.block.create({
         data: { blockerId: user.id, blockedId: wasInConvoWith },
       });
@@ -301,18 +323,20 @@ async function HandlePotentialCommand(
 }
 
 function EstWaitMessage() {
-  if (!historicalWaitTimes.length) return '';
+  const [earliestConvo] = historicalConvos;
+  if (!earliestConvo) return '';
   //Median of historical wait times
-  const estWait = historicalWaitTimes.sort((a, b) => a - b)[
-    Math.floor(historicalWaitTimes.length / 2)
-  ]!;
+  const estWait = Math.ceil(
+    minutesSince(earliestConvo) / historicalConvos.length,
+  );
   return `Estimated wait time: **${Minutes(estWait)}**.
 `;
 }
 
+//TODO: make failable
 async function FindConvo(user: User, message: Message) {
   while (newConvoSemaphore) {
-    await new Promise(resolve => setTimeout(resolve, 100));
+    await new Promise(resolve => setTimeout(resolve, 50));
   }
   newConvoSemaphore = true;
   const { id, snowflake, sexFlags, convoWithId } = user;
@@ -322,13 +346,13 @@ async function FindConvo(user: User, message: Message) {
     return;
   }
   while (true) {
-    //TODO: prevent consecutives: AND prevWithId != ${id}
     const [partner] = await prisma.$queryRaw<User[]>`
       SELECT * FROM "User"
       WHERE accessible = true
       AND convoWithId IS NULL
       AND snowflake != ${snowflake}
       AND seekingSince IS NOT NULL
+      AND (prevWithId IS NULL OR prevWithId != ${id})
       AND NOT EXISTS (
         SELECT * FROM "Block"
         WHERE blockerId = ${id} AND blockedId = "User".id
@@ -387,10 +411,12 @@ async function HandleCommandInteraction(interaction: CommandInteraction) {
   const user = await TouchUser(interaction.user);
   if (!channel || !user) return;
   if (channel.type !== ChannelType.DM) {
-    await interaction.reply({
-      content: 'Please use this command in a DM.',
-      ephemeral: true,
-    });
+    try {
+      await interaction.reply({
+        content: 'Please use this command in DMs with me.',
+        ephemeral: true,
+      });
+    } catch (e) {}
     return;
   }
   await HandlePotentialCommand(
@@ -497,7 +523,7 @@ async function MakeContext() {
         await SendEmbed(() => MarkInaccessible(user.id))(
           message.channel,
           'Sorry, but your partner left the conversation.',
-          { colour: '#ff4444' },
+          { colour: '#ff4444', footer: true },
           'Send a message to start a new conversation.',
         );
       }
@@ -623,12 +649,10 @@ main()
     process.exit(1);
   });
 
-//TODO: auto-ban if user is blocked more than once per ten conversations, over twenty conversations
+//TODO: auto-ban if user is blocked more than f(user) times
 //TODO: prevent mass join-leave sprees
-//TODO: report feature
-//TODO: ban feature
+//TODO: report/ban feature
 //TODO: consume e.g. /gender male
 //TODO: Gender change cooldown
 //TODO: Probe for user reachability
 //TODO: Message cooldown
-//TODO: convos in last 24h
