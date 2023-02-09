@@ -16,6 +16,8 @@ import { cacheAdd, cacheHas } from './cache';
 import * as dotenv from 'dotenv';
 dotenv.config();
 const linkRegex = /(https?|discord).+?($|\s)/;
+const yesterday = () => new Date(new Date().getTime() - 24 * 60 * 60 * 1000);
+const oneMinuteAgo = () => new Date(new Date().getTime() - 60 * 1000);
 
 const client = new Client({
   intents: [
@@ -27,12 +29,11 @@ const client = new Client({
   partials: [Partials.Channel, Partials.Message],
 });
 const prisma = new PrismaClient();
-const historicalConvos: Date[] = [];
+const historicalConvos: [number, Date][] = [];
 let newConvoSemaphore = false;
 
 const trimHistoricalConvos = () => {
-  const yesterday = new Date(new Date().getTime() - 24 * 60 * 60 * 1000);
-  while (historicalConvos.length && historicalConvos[0]! < yesterday) {
+  while (historicalConvos.length && historicalConvos[0]![1] < yesterday()) {
     historicalConvos.shift();
   }
 };
@@ -127,7 +128,7 @@ export async function MakeEmbed(
       if (!earliestConvo) return '';
       const numConvoRecently = historicalConvos.length;
       const numConvoDurationHours = Math.ceil(
-        (Date.now() - earliestConvo.getTime()) / 3600000,
+        (Date.now() - earliestConvo[1].getTime()) / 3600000,
       );
       return `\n${numConvoRecently} convos in the last ${numConvoDurationHours} hours.`;
     };
@@ -276,7 +277,7 @@ To match particular genders, use \`/gender\`.`,
     }),
   );
   //Cache time
-  historicalConvos.push(new Date());
+  historicalConvos.push([user.id, new Date()]);
   trimHistoricalConvos();
 }
 
@@ -352,7 +353,7 @@ function EstWaitMessage() {
   if (!earliestConvo) return '';
   //Median of historical wait times
   const estWait = Math.ceil(
-    minutesSince(earliestConvo) / historicalConvos.length,
+    minutesSince(earliestConvo[1]) / historicalConvos.length,
   );
   return `Estimated wait time: **${Minutes(estWait)}**.
 `;
@@ -539,7 +540,8 @@ async function MakeContext() {
       if (user.numConvo < 10) {
         if (message.content.match(linkRegex)) {
           await message.reply(
-            'Sorry, you need to have at least ten conversations before you can send links. This is to help mitigate spam.',
+            `Sorry, you need to have at least ten conversations before you can send links.
+This is to help mitigate spam.`,
           );
           return;
         }
@@ -547,10 +549,25 @@ async function MakeContext() {
       //Forward messages
       const forwardResult = await ForwardMessage(message, user);
       if (forwardResult === 'No convo') {
+        //Prevent links from starting conversations
         if (
           message.content.match(linkRegex) &&
           !message.content.includes('attachment')
         ) {
+          return;
+        }
+        //Mitigate join-leave sprees
+        const latestConvo = [...historicalConvos]
+          .reverse()
+          .find(x => x[0] === user.id);
+        if (
+          latestConvo &&
+          latestConvo[1].getTime() > oneMinuteAgo().getTime()
+        ) {
+          await message.reply(
+            `Sorry, you need to wait one minute after your previous conversation.
+This is to help mitigate spam.`,
+          );
           return;
         }
         //Start or join a conversation
@@ -617,11 +634,6 @@ async function MakeContext() {
         ?.users.remove(client.user.id);
     },
     async HandleGuildMemberAdd(member: GuildMember) {
-      // console.log(
-      //   new Date().toLocaleTimeString(),
-      //   'guildMemberAdd',
-      //   member.user.tag,
-      // );
       const embed = (withBlockWarning: boolean) =>
         [
           'Welcome!',
@@ -691,7 +703,6 @@ main()
   });
 
 //TODO: auto-ban if user is blocked more than f(user) times
-//TODO: prevent mass convo sprees
 //TODO: report/ban feature (cached transcript)
 //TODO: consume e.g. /gender male
 //TODO: Gender change cooldown

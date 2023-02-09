@@ -80,7 +80,8 @@ export async function GenderEmbed(user: User) {
       ],
     },
     `Press the buttons relevant to you. You can press multiple buttons.
-⚠️ Matching specific genders greatly increases wait time for a new conversation. For quicker matching, match with anyone.`,
+⚠️ Matching specific genders greatly increases wait time for a new conversation.
+    For quicker matching, seek all genders.`,
   );
 }
 
