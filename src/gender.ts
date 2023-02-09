@@ -70,7 +70,7 @@ export async function GenderEmbed(user: User) {
   const { gender, seeking } = GenderSeeking(user);
   const seeks = seeking.join(' + ');
   return await MakeEmbed(
-    'Set your gender preferences',
+    'Set your gender preferences.',
     {
       colour: 'Purple',
       rows,
@@ -79,7 +79,8 @@ export async function GenderEmbed(user: User) {
         { name: "You're seeking", inline: true, value: seeks },
       ],
     },
-    'Press the buttons relevant to you. You can press multiple buttons.',
+    `Press the buttons relevant to you. You can press multiple buttons.
+⚠️ Matching specific genders greatly increases wait time for a new conversation. For quicker matching, match with anyone.`,
   );
 }
 

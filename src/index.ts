@@ -15,6 +15,7 @@ import { ChangeGender, GenderEmbed, GenderSeeking } from './gender';
 import { cacheAdd, cacheHas } from './cache';
 import * as dotenv from 'dotenv';
 dotenv.config();
+const linkRegex = /(https?|discord).+?($|\s)/;
 
 const client = new Client({
   intents: [
@@ -69,6 +70,16 @@ const userUpdate = async (
   params: Parameters<typeof prisma['user']['update']>[0],
 ) => resilience(() => prisma.user.update(params));
 
+const userBlock = failable(async (blockerId: number, blockedId: number) => {
+  await transaction(
+    prisma.block.create({ data: { blockerId, blockedId } }),
+    prisma.user.update({
+      data: { prevWithId: null },
+      where: { id: blockerId },
+    }),
+  );
+});
+
 async function MarkInaccessible(id: number, banned?: boolean) {
   const data = {
     accessible: false,
@@ -105,8 +116,10 @@ export async function MakeEmbed(
       _count: { accessible: true },
       _sum: { numConvo: true, numMessage: true },
     });
-    const [numUser, numConvo, numMessage] = [nu, nc, nm].map(
-      x => x?.toLocaleString() ?? '--',
+    const [numUser, numConvo, numMessage] = [nu, nc, nm].map(x =>
+      x !== null
+        ? `${(x / 1000).toLocaleString('en-GB', { maximumFractionDigits: 1 })}k`
+        : '--',
     );
     const recentConvos = () => {
       trimHistoricalConvos();
@@ -285,28 +298,40 @@ async function HandlePotentialCommand(
         ? 'You are no longer seeking'
         : "You aren't in a conversation",
       { colour: '#ff00ff', footer: !!wasInConvo },
-      'Send a message to start a new conversation.',
+      `Send a message to start a new conversation.${
+        wasInConvo ? '\nSend /block to block your previous partner.' : ''
+      }`,
     );
   }
   if (commandName === 'block') {
-    //console.log('Blocker', user.tag);
     const wasInConvoWith = await EndConvo(user);
     if (wasInConvoWith) {
-      //TODO: make failable
-      await prisma.block.create({
-        data: { blockerId: user.id, blockedId: wasInConvoWith },
-      });
       embed = await MakeEmbed(
         'Disconnected and blocked',
         { colour: '#00ffff' },
         'You will never match with them again.\nSend a message to start a new conversation.',
       );
+      await userBlock(
+        async () => (embed = await MakeEmbed("Sorry, that didn't work", {})),
+      )(user.id, wasInConvoWith);
     } else {
-      embed = await MakeEmbed(
-        'You are not in a conversation.',
-        { colour: 'Red' },
-        'Send a message to start a new conversation.',
-      );
+      const { prevWithId } = user;
+      if (prevWithId) {
+        embed = await MakeEmbed(
+          'Blocked your previous partner',
+          { colour: '#00ffff' },
+          'You will never match with them again.\nSend a message to start a new conversation.',
+        );
+        await userBlock(
+          async () => (embed = await MakeEmbed("Sorry, that didn't work", {})),
+        )(user.id, prevWithId);
+      } else {
+        embed = await MakeEmbed(
+          "You aren't in a conversation",
+          { colour: 'Red' },
+          'Send a message to start a new conversation.',
+        );
+      }
     }
   }
   if (commandName === 'gender') {
@@ -510,9 +535,24 @@ async function MakeContext() {
           await HandlePotentialCommand(commandName, user, reply, arg);
         return;
       }
+      //Disallow links for users with fewer than ten conversations
+      if (user.numConvo < 10) {
+        if (message.content.match(linkRegex)) {
+          await message.reply(
+            'Sorry, you need to have at least ten conversations before you can send links. This is to help mitigate spam.',
+          );
+          return;
+        }
+      }
       //Forward messages
       const forwardResult = await ForwardMessage(message, user);
       if (forwardResult === 'No convo') {
+        if (
+          message.content.match(linkRegex) &&
+          !message.content.includes('attachment')
+        ) {
+          return;
+        }
         //Start or join a conversation
         await FindConvo(user, message);
       }
@@ -585,8 +625,9 @@ async function MakeContext() {
       const embed = (withBlockWarning: boolean) =>
         [
           'Welcome!',
-          { colour: '#00ff00', content: `<@${member.id}>` },
-          `I'm a bot that connects you to random people in DMs. Send me a message to start a conversation.${
+          { colour: '#00ff00', footer: true },
+          `I'm a bot that connects you to random people in DMs.
+Send me a message to start a conversation.${
             withBlockWarning
               ? `
 Ensure that you have DMs enabled for this server and that you're not blocking me.`
@@ -650,9 +691,11 @@ main()
   });
 
 //TODO: auto-ban if user is blocked more than f(user) times
-//TODO: prevent mass join-leave sprees
-//TODO: report/ban feature
+//TODO: prevent mass convo sprees
+//TODO: report/ban feature (cached transcript)
 //TODO: consume e.g. /gender male
 //TODO: Gender change cooldown
 //TODO: Probe for user reachability
 //TODO: Message cooldown
+//TODO: ranking by number of conversations
+//TODO: "connect to any gender instead"
