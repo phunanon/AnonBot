@@ -12,7 +12,7 @@ import { BaseMessageOptions, ClientEvents, GuildMember } from 'discord.js';
 import { ActionRowBuilder, ButtonBuilder, GatewayIntentBits } from 'discord.js';
 import { CommandInteraction, ButtonInteraction } from 'discord.js';
 import { ChangeGender, GenderEmbed, GenderSeeking } from './gender';
-import { cacheAdd, cacheHas } from './cache';
+import { cacheAdd, cacheHas, failable, resilience } from './util';
 import * as dotenv from 'dotenv';
 dotenv.config();
 const linkRegex = /(https?|discord).+?($|\s)/;
@@ -37,32 +37,6 @@ const trimHistoricalConvos = () => {
     historicalConvos.shift();
   }
 };
-
-async function resilience<T>(f: () => Promise<T>) {
-  for (let i = 0; i < 5; i++) {
-    try {
-      return await f();
-    } catch (e) {
-      console.log(i, 'resilience', e);
-    }
-    //Sleep 100ms
-    await new Promise(resolve => setTimeout(resolve, 100));
-  }
-  //TODO: throw and inform user
-}
-
-function failable<P extends any[], U>(f: (...args: P) => Promise<U>) {
-  return <F>(onFail?: () => Promise<F>) =>
-    async (...params: P): Promise<U | Awaited<F> | undefined> => {
-      try {
-        return await f(...params);
-      } catch (e) {
-        console.log('failable', e);
-        const x = await onFail?.();
-        return x;
-      }
-    };
-}
 
 const transaction = async (...actions: PrismaPromise<any>[]) =>
   await resilience(async () => await prisma.$transaction(actions));
@@ -108,35 +82,43 @@ export async function MakeEmbed(
   const embed = new EmbedBuilder().setColor(colour).setTitle(title);
   if (body) embed.setDescription(body);
   fields?.forEach(x => embed.addFields(x));
-  //TODO: make failable
   if (footer) {
-    const {
-      _count: { accessible: nu },
-      _sum: { numConvo: nc, numMessage: nm },
-    } = await prisma.user.aggregate({
-      _count: { accessible: true },
-      _sum: { numConvo: true, numMessage: true },
-    });
-    const [numUser, numConvo, numMessage] = [nu, nc, nm].map(x =>
-      x !== null
-        ? `${(x / 1000).toLocaleString('en-GB', { maximumFractionDigits: 1 })}k`
-        : '--',
-    );
-    const recentConvos = () => {
-      trimHistoricalConvos();
-      const [earliestConvo] = historicalConvos;
-      if (!earliestConvo) return '';
-      const numConvoRecently = historicalConvos.length;
-      const numConvoDurationHours = Math.ceil(
-        (Date.now() - earliestConvo[1].getTime()) / 3600000,
-      );
-      return `\n${numConvoRecently} convos in the last ${numConvoDurationHours} hours.`;
-    };
-    embed.setFooter({
-      text: `${numUser} strangers; ${numConvo} convos, ${numMessage} messages ever.${recentConvos()}`,
-    });
+    await MakeEmbedFooter()(embed);
   }
   return { embeds: [embed], components: rows, content };
+}
+
+const MakeEmbedFooter = failable(_MakeEmbedFooter);
+async function _MakeEmbedFooter(embed: EmbedBuilder) {
+  const {
+    _count: { accessible: nu },
+    _sum: { numConvo: nc, numMessage: nm },
+  } = await prisma.user.aggregate({
+    _count: { accessible: true },
+    _sum: { numConvo: true, numMessage: true },
+  });
+  const [numUser, numConvo, numMessage] = [
+    nu,
+    nc != null ? nc / 2 : null,
+    nm,
+  ].map(x =>
+    x !== null
+      ? `${(x / 1000).toLocaleString('en-GB', { maximumFractionDigits: 1 })}k`
+      : '--',
+  );
+  const recentConvos = () => {
+    trimHistoricalConvos();
+    const [earliestConvo] = historicalConvos;
+    if (!earliestConvo) return '';
+    const numConvoRecently = historicalConvos.length;
+    const numConvoDurationHours = Math.ceil(
+      (Date.now() - earliestConvo[1].getTime()) / 3600000,
+    );
+    return `\n${numConvoRecently} convos in the last ${numConvoDurationHours} hours.`;
+  };
+  embed.setFooter({
+    text: `${numUser} strangers; ${numConvo} convos, ${numMessage} messages ever.${recentConvos()}`,
+  });
 }
 
 function UserStatsEmbedFields(user: User, name: string) {
@@ -180,9 +162,10 @@ const GetUserChannel = failable(async (id: number) => {
 /** Ends user's conversation, or if not in one stops seeking for one. */
 async function EndConvo(
   { tag, id, convoWithId }: User,
+  reason: 'stop' | 'block' | 'ban' | 'inaccessible',
   partnerInaccessible = false,
 ) {
-  console.log(Date.now(), 'EndConvo ', tag, id, convoWithId);
+  console.log(Date.now(), 'EndConvo ', tag, id, convoWithId, reason);
   if (convoWithId) {
     //Update partners
     const data = { convoWithId: null, seekingSince: null };
@@ -247,9 +230,9 @@ async function _JoinConvo(
       'You have been matched with a partner!',
       { colour: 'Green', fields: name === 'you' ? yourFields : theirFields },
       `It took **${waitMin}** for this match to be found.
-To disconnect use \`/stop\`.
-To disconnect and block them, use \`/block\`.
-To match particular genders, use \`/gender\`.`,
+Use \`/stop\` to disconnect.
+Use \`/block\` to disconnect and block them.
+Use \`/gender\` to match particular genders.`,
     );
   //Inform users and exchange greetings
   //(This partner send will throw if the partner left after looking for a convo)
@@ -291,7 +274,7 @@ async function HandlePotentialCommand(
 ) {
   let embed: Awaited<ReturnType<typeof MakeEmbed>> | null = null;
   if (commandName === 'stop') {
-    const wasInConvo = await EndConvo(user);
+    const wasInConvo = await EndConvo(user, 'stop');
     embed = await MakeEmbed(
       wasInConvo
         ? 'You have disconnected'
@@ -300,12 +283,14 @@ async function HandlePotentialCommand(
         : "You aren't in a conversation",
       { colour: '#ff00ff', footer: !!wasInConvo },
       `Send a message to start a new conversation.${
-        wasInConvo ? '\nSend /block to block your previous partner.' : ''
+        wasInConvo
+          ? '\nSend `/block` to block who you were just talking to.'
+          : ''
       }`,
     );
   }
   if (commandName === 'block') {
-    const wasInConvoWith = await EndConvo(user);
+    const wasInConvoWith = await EndConvo(user, 'block');
     if (wasInConvoWith) {
       embed = await MakeEmbed(
         'Disconnected and blocked',
@@ -339,7 +324,7 @@ async function HandlePotentialCommand(
     embed = await GenderEmbed(user);
   }
   if (commandName === 'ban' && user.tag === 'Moderator#3922') {
-    const wasInConvoWith = await EndConvo(user);
+    const wasInConvoWith = await EndConvo(user, 'ban');
     if (wasInConvoWith) {
       await MarkInaccessible(wasInConvoWith, true);
       embed = await MakeEmbed('Done.', { colour: 'Green' });
@@ -371,8 +356,9 @@ async function FindConvo(user: User, message: Message) {
     newConvoSemaphore = false;
     return;
   }
+  let partner: User | undefined;
   while (true) {
-    const [partner] = await prisma.$queryRaw<User[]>`
+    [partner] = await prisma.$queryRaw<User[]>`
       SELECT * FROM "User"
       WHERE accessible = true
       AND convoWithId IS NULL
@@ -395,8 +381,8 @@ async function FindConvo(user: User, message: Message) {
     if (partner) {
       let failed = false;
       const onFail = async () => {
-        await EndConvo(user); //For good measure
-        await MarkInaccessible(partner.id);
+        await EndConvo(user, 'inaccessible'); //For good measure
+        partner && (await MarkInaccessible(partner.id));
         failed = true;
       };
       //Attempt to join a conversation (fails if partner left after seeking)
@@ -405,29 +391,29 @@ async function FindConvo(user: User, message: Message) {
       await JoinConvo(onFail)(user, partner, message, partnerChannel);
       if (failed) continue;
     }
-    if (!partner) {
-      //Start seeking
-      if (Number.isInteger(Math.log2(user?.numConvo ?? 0))) {
-        try {
-          await message.channel.send(
-            'Why not join our hang-out while you wait?\nhttps://discord.gg/QY5QNUCms7',
-          );
-        } catch (e) {}
-      }
-      const estWaitMessage = EstWaitMessage();
-      await SendEmbed(Inaccessibility(user.id))(
-        message.channel,
-        'Waiting for a partner match...',
-        { footer: true },
-        `${estWaitMessage}Your message will be sent to them.
-To cancel, use \`/stop\`.`,
-      );
-      await userUpdate({
-        where: { snowflake },
-        data: { seekingSince: new Date(), greeting: message.content },
-      });
-    }
     break;
+  }
+  if (!partner) {
+    //Start seeking
+    if (Number.isInteger(Math.log2(user?.numConvo ?? 0))) {
+      try {
+        await message.channel.send(
+          'Why not join our hang-out while you wait?\nhttps://discord.gg/QY5QNUCms7',
+        );
+      } catch (e) {}
+    }
+    const estWaitMessage = EstWaitMessage();
+    await SendEmbed(Inaccessibility(user.id))(
+      message.channel,
+      'Waiting for a partner match...',
+      { footer: true },
+      `${estWaitMessage}Your message will be sent to them.
+To cancel, use \`/stop\`.`,
+    );
+    await userUpdate({
+      where: { snowflake },
+      data: { seekingSince: new Date(), greeting: message.content },
+    });
   }
   newConvoSemaphore = false;
 }
@@ -458,7 +444,10 @@ async function HandleButtonInteraction(interaction: ButtonInteraction) {
   const { customId } = interaction;
   const user = await TouchUser(interaction.user);
   if (!user) return;
-  await ChangeGender(prisma, user, customId);
+  await ChangeGender(
+    async () =>
+      await interaction.reply('There was a problem. Please try again.'),
+  )(prisma, user, customId);
   await interaction.update(await GenderEmbed(user));
 }
 
@@ -482,6 +471,7 @@ async function MakeContext() {
   }
 
   async function ForwardMessage(message: Message, { id, convoWithId }: User) {
+    if (!message.content) return true;
     try {
       if (convoWithId === null) return 'No convo';
       const onFail = Inaccessibility(convoWithId);
@@ -505,7 +495,8 @@ async function MakeContext() {
         msgToMsg.shift();
       }
       return true;
-    } catch (e) {
+    } catch (e: any) {
+      console.log('Partner left error', 'rawError' in e ? e.rawError : e);
       return 'Partner left';
     }
   }
@@ -575,7 +566,7 @@ This is to help mitigate spam.`,
       }
       if (forwardResult === 'Partner left') {
         //End conversation
-        await EndConvo(user, true);
+        await EndConvo(user, 'inaccessible', true);
         //Inform user
         await SendEmbed(() => MarkInaccessible(user.id))(
           message.channel,
@@ -634,13 +625,17 @@ This is to help mitigate spam.`,
         ?.users.remove(client.user.id);
     },
     async HandleGuildMemberAdd(member: GuildMember) {
-      const embed = (withBlockWarning: boolean) =>
+      const embed = (inChannel: boolean) =>
         [
           'Welcome!',
-          { colour: '#00ff00', footer: true },
+          {
+            colour: '#00ff00',
+            footer: true,
+            content: inChannel ? `<@${member.id}>` : undefined,
+          },
           `I'm a bot that connects you to random people in DMs.
 Send me a message to start a conversation.${
-            withBlockWarning
+            inChannel
               ? `
 Ensure that you have DMs enabled for this server and that you're not blocking me.`
               : ''
@@ -710,3 +705,5 @@ main()
 //TODO: Message cooldown
 //TODO: ranking by number of conversations
 //TODO: "connect to any gender instead"
+//TODO: prevent db reciprocal blocks
+//TODO: don't double-welcome people who join stranger chat from the bot

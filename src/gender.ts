@@ -1,6 +1,7 @@
 import { PrismaClient, User } from '@prisma/client';
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
 import { MakeEmbed } from '.';
+import { failable } from './util';
 
 export function GenderSeeking({ sexFlags }: User) {
   const genderFlags = (sexFlags & 0b111000) >> 3;
@@ -85,7 +86,8 @@ export async function GenderEmbed(user: User) {
   );
 }
 
-export async function ChangeGender(
+export const ChangeGender = failable(_ChangeGender);
+export async function _ChangeGender(
   prisma: PrismaClient,
   user: User,
   command: string,
