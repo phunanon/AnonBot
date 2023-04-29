@@ -42,7 +42,7 @@ const transaction = async (...actions: PrismaPromise<any>[]) =>
   await resilience(async () => await prisma.$transaction(actions));
 
 const userUpdate = async (
-  params: Parameters<typeof prisma['user']['update']>[0],
+  params: Parameters<(typeof prisma)['user']['update']>[0],
 ) => resilience(() => prisma.user.update(params));
 
 const userBlock = failable(async (blockerId: number, blockedId: number) => {
@@ -411,7 +411,7 @@ async function FindConvo(user: User, message: Message) {
       if (failed) continue;
       if (sexFlags !== newSexFlags) {
         const tried = GenderSeeking(sexFlags).seeking.join(' + ');
-        console.log("switched to seeking anyone for", user.tag);
+        console.log('switched to seeking anyone for', user.tag);
         await message.reply(
           `There were too many people waiting to match with ${tried}. You have been matched with anyone instead.`,
         );
@@ -480,6 +480,8 @@ async function HandleButtonInteraction(interaction: ButtonInteraction) {
 async function MakeContext() {
   //Circular buffer to keep track of message edits
   const msgToMsg: { a: Message; b: Message }[] = [];
+  //Circular buffer to slow down repetitive messages [id, timestamp]
+  const userMsgs: [number, number][] = [];
 
   async function GetM2M(message: Message | PartialMessage) {
     const m2m = msgToMsg.find(({ a, b }) => [a.id, b.id].includes(message.id));
@@ -554,14 +556,28 @@ async function MakeContext() {
         return;
       }
       //Disallow links for users with fewer than ten conversations
-      if (user.numConvo < 10) {
-        if (message.content.match(linkRegex)) {
-          await message.reply(
-            `Sorry, you need to have at least ten conversations before you can send links.
+      if (user.numConvo < 10 && message.content.match(linkRegex)) {
+        await message.reply(
+          `Sorry, you need to have at least ten conversations before you can send links.
 This is to help mitigate spam.`,
-          );
-          return;
-        }
+        );
+        return;
+      }
+      //Disallow messages from those who have sent more than six messages in the last half minute
+      const halfMinuteAgo = new Date(Date.now() - 30_000).getTime();
+      const userMessages = userMsgs.filter(
+        ([id, time]) => id === user.id && time > halfMinuteAgo,
+      );
+      if (userMessages.length > 6) {
+        await message.reply(
+          `Sorry, you need to wait half a minute before sending another message.
+This is to help mitigate spam.`,
+        );
+        return;
+      }
+      userMsgs.push([user.id, new Date().getTime()]);
+      while (userMsgs.length > 100) {
+        userMsgs.shift();
       }
       //Forward messages
       const forwardResult = await ForwardMessage(message, user);
