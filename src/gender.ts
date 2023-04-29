@@ -3,7 +3,7 @@ import { ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
 import { MakeEmbed } from '.';
 import { failable } from './util';
 
-export function GenderSeeking({ sexFlags }: User) {
+export function GenderSeeking(sexFlags: User['sexFlags']) {
   const genderFlags = (sexFlags & 0b111000) >> 3;
   const seekFlags = sexFlags & 0b111;
   const gender = {
@@ -20,7 +20,7 @@ export function GenderSeeking({ sexFlags }: User) {
 }
 
 export function GenderButtonRows(user: User) {
-  const { gender, seeking } = GenderSeeking(user);
+  const { gender, seeking } = GenderSeeking(user.sexFlags);
   const seekingAnyone = seeking.includes('anyone');
   const seekingMale = seeking.includes('male') || seekingAnyone;
   const seekingFemale = seeking.includes('female') || seekingAnyone;
@@ -68,7 +68,7 @@ export function GenderButtonRows(user: User) {
 
 export async function GenderEmbed(user: User) {
   const rows = GenderButtonRows(user);
-  const { gender, seeking } = GenderSeeking(user);
+  const { gender, seeking } = GenderSeeking(user.sexFlags);
   const seeks = seeking.join(' + ');
   return await MakeEmbed(
     'Set your gender preferences.',

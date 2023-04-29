@@ -210,11 +210,13 @@ async function _JoinConvo(
   partnerChannel: TextBasedChannel,
 ) {
   console.log(Date.now(), 'JoinConvo', user.tag, toJoin.tag);
-  const { id, snowflake } = user;
+  const { id, snowflake, sexFlags } = user;
   let waitMin = Minutes(Math.ceil(minutesSince(toJoin.seekingSince!)));
   //Generate stats
-  const { gender: youGender, seeking: youSeeking } = GenderSeeking(user);
-  const { gender: themGender, seeking: themSeeking } = GenderSeeking(toJoin);
+  const { gender: youGender, seeking: youSeeking } = GenderSeeking(sexFlags);
+  const { gender: themGender, seeking: themSeeking } = GenderSeeking(
+    toJoin.sexFlags,
+  );
   const seeking = (name: string, seeking: string[], gender?: string) =>
     `${name} – ${gender ? `${gender} ` : ''}seeking ${seeking.join(' + ')}`;
   const yourFields = [
@@ -352,9 +354,26 @@ async function FindConvo(user: User, message: Message) {
   newConvoSemaphore = true;
   const { id, snowflake, sexFlags, convoWithId } = user;
   if (convoWithId !== null) {
-    console.log("Yep, they're in a convo already!");
+    console.error("Yep, they're in a convo already!");
     newConvoSemaphore = false;
     return;
+  }
+  //Check how many others are using the same sexFlags (if not seeking any)
+  let newSexFlags = sexFlags;
+  if ((sexFlags & 7) !== 7) {
+    const numSexSeekQuery = await prisma.$queryRaw<{ numSexSeek: BigInt }[]>`
+      SELECT COUNT(1) "numSexSeek" FROM "User"
+      WHERE accessible = true
+      AND convoWithId IS NULL
+      AND seekingSince IS NOT NULL
+      AND sexFlags & 7 != 7
+      AND sexFlags & 7 = ${sexFlags & 7}
+    `;
+    const numSexSeek = Number(numSexSeekQuery[0]!.numSexSeek);
+    //Seek anybody if 5 or more are seeking the same sex
+    if (numSexSeek > 4) {
+      newSexFlags = (newSexFlags & 0b111000) | 7;
+    }
   }
   let partner: User | undefined;
   while (true) {
@@ -373,8 +392,8 @@ async function FindConvo(user: User, message: Message) {
         SELECT * FROM "Block"
         WHERE blockerId = "User".id AND blockedId = ${id}
       )
-      AND ((${sexFlags} & 7) & (sexFlags >> 3)) AND NOT (~(${sexFlags} & 7) & (sexFlags >> 3))
-      AND ((sexFlags & 7) & (${sexFlags} >> 3)) AND NOT (~(sexFlags & 7) & (${sexFlags} >> 3))
+      AND ((${newSexFlags} & 7) & (sexFlags >> 3)) AND NOT (~(${newSexFlags} & 7) & (sexFlags >> 3))
+      AND ((sexFlags & 7) & (${newSexFlags} >> 3)) AND NOT (~(sexFlags & 7) & (${newSexFlags} >> 3))
       ORDER BY seekingSince ASC
       LIMIT 1
     `;
@@ -390,6 +409,13 @@ async function FindConvo(user: User, message: Message) {
       if (!partnerChannel) continue;
       await JoinConvo(onFail)(user, partner, message, partnerChannel);
       if (failed) continue;
+      if (sexFlags !== newSexFlags) {
+        const tried = GenderSeeking(sexFlags).seeking.join(' + ');
+        console.log("switched to seeking anyone for", user.tag);
+        await message.reply(
+          `There were too many people waiting to match with ${tried}. You have been matched with anyone instead.`,
+        );
+      }
     }
     break;
   }
