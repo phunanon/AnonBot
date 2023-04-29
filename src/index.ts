@@ -667,6 +667,10 @@ This is to help mitigate spam.`,
         ?.users.remove(client.user.id);
     },
     async HandleGuildMemberAdd(member: GuildMember) {
+      //Don't attempt to onboard Deadline members
+      if (member.guild.id === '608406913016791073') {
+        return;
+      }
       const embed = (inChannel: boolean) =>
         [
           'Welcome!',
