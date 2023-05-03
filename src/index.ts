@@ -424,7 +424,7 @@ async function FindConvo(user: User, message: Message) {
     if (Number.isInteger(Math.log2(user?.numConvo ?? 0))) {
       try {
         await message.channel.send(
-          'Why not join our hang-out while you wait?\nhttps://discord.gg/QY5QNUCms7',
+          'Why not join our hang-out while you wait?\nhttps://discord.gg/BbPkC9ATrq',
         );
       } catch (e) {}
     }
