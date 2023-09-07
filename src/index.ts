@@ -2,7 +2,7 @@ const maintenanceMode = false;
 const maintenanceModeMessage = `The bot is currently in maintenance mode.
 Your conversation will continue as normal once work is complete.
 Please try again in five minutes.`;
-const mods = ['Moderator#3922', 'Auekha#4109'];
+const mods = ['anon.mod#0', 'auekha#0'];
 import { PrismaClient, PrismaPromise, User } from '@prisma/client';
 import { Client, IntentsBitField, CacheType, Partials } from 'discord.js';
 import { Interaction, Message, PartialMessage, Typing } from 'discord.js';
@@ -11,7 +11,7 @@ import { TextBasedChannel, ChannelType, User as DUser } from 'discord.js';
 import { BaseMessageOptions, ClientEvents, GuildMember } from 'discord.js';
 import { ActionRowBuilder, ButtonBuilder, GatewayIntentBits } from 'discord.js';
 import { CommandInteraction, ButtonInteraction } from 'discord.js';
-import { ChangeGender, GenderEmbed, GenderSeeking } from './gender';
+import { ChangeGender, Gender, GenderEmbed, GenderSeeking } from './gender';
 import { cacheAdd, cacheHas, failable, resilience } from './util';
 import * as dotenv from 'dotenv';
 dotenv.config();
@@ -217,15 +217,25 @@ async function _JoinConvo(
   const { gender: themGender, seeking: themSeeking } = GenderSeeking(
     toJoin.sexFlags,
   );
-  const seeking = (name: string, seeking: string[], gender?: string) =>
-    `${name} – ${gender ? `${gender} ` : ''}seeking ${seeking.join(' + ')}`;
+  const seeking = (
+    who: 'you' | 'them',
+    seeking: (Gender | 'anyone')[],
+    gender?: Gender,
+  ) => {
+    const genderedPronoun = gender
+      ? { male: 'Him', female: 'Her', 'non-binary': 'Them' }[gender]
+      : 'Them';
+    const pronoun = who === 'you' ? 'You' : genderedPronoun;
+    const seeks = seeking.join(' + ');
+    return `${pronoun} – ${gender ? `${gender} ` : ''}seeking ${seeks}`;
+  };
   const yourFields = [
-    UserStatsEmbedFields(user, seeking('You', youSeeking, youGender)),
-    UserStatsEmbedFields(toJoin, seeking('Them', themSeeking, themGender)),
+    UserStatsEmbedFields(user, seeking('you', youSeeking, youGender)),
+    UserStatsEmbedFields(toJoin, seeking('them', themSeeking, themGender)),
   ];
   const theirFields = [
-    UserStatsEmbedFields(toJoin, seeking('You', themSeeking, themGender)),
-    UserStatsEmbedFields(user, seeking('Them', youSeeking, youGender)),
+    UserStatsEmbedFields(toJoin, seeking('you', themSeeking, themGender)),
+    UserStatsEmbedFields(user, seeking('them', youSeeking, youGender)),
   ];
   const matchEmbed = async (name: 'you' | 'them') =>
     await MakeEmbed(
@@ -346,18 +356,64 @@ function EstWaitMessage() {
 `;
 }
 
+async function StartConvo(
+  user: User,
+  partner: User,
+  message: Message,
+  newSexFlags: number,
+) {
+  const { sexFlags } = user;
+  let failed = false;
+  const onFail = async () => {
+    await EndConvo(user, 'inaccessible'); //For good measure
+    await MarkInaccessible(partner.id);
+    failed = true;
+  };
+  //Attempt to join a conversation (fails if partner left after seeking)
+  const partnerChannel = await GetUserChannel(onFail)(partner.id);
+  if (!partnerChannel) return;
+  await JoinConvo(onFail)(user, partner, message, partnerChannel);
+  if (failed) return;
+  if (sexFlags !== newSexFlags) {
+    const tried = GenderSeeking(sexFlags).seeking.join(' + ');
+    console.log('switched to seeking anyone for', user.tag);
+    await message.reply(
+      `There were too many people waiting to match with ${tried}. You have been matched with anyone instead.`,
+    );
+  }
+  return true;
+}
+
+async function StartSeeking(user: User, message: Message) {
+  if (Number.isInteger(Math.log2(user?.numConvo ?? 0))) {
+    try {
+      await message.channel.send(
+        'Why not join our hang-out while you wait?\nhttps://discord.gg/BbPkC9ATrq',
+      );
+    } catch (e) {}
+  }
+  const estWaitMessage = EstWaitMessage();
+  await SendEmbed(Inaccessibility(user.id))(
+    message.channel,
+    'Waiting for a partner match...',
+    { footer: true },
+    `${estWaitMessage}Your message will be sent to them.
+To cancel, use \`/stop\`.`,
+  );
+  const { snowflake } = user;
+  await userUpdate({
+    where: { snowflake },
+    data: { seekingSince: new Date(), greeting: message.content },
+  });
+}
+
 //TODO: make failable
 async function FindConvo(user: User, message: Message) {
   while (newConvoSemaphore) {
     await new Promise(resolve => setTimeout(resolve, 50));
   }
   newConvoSemaphore = true;
-  const { id, snowflake, sexFlags, convoWithId } = user;
-  if (convoWithId !== null) {
-    console.error("Yep, they're in a convo already!");
-    newConvoSemaphore = false;
-    return;
-  }
+  const { id, snowflake, sexFlags } = user;
   //Check how many others are using the same sexFlags (if not seeking any)
   let newSexFlags = sexFlags;
   if ((sexFlags & 7) !== 7) {
@@ -375,9 +431,9 @@ async function FindConvo(user: User, message: Message) {
       newSexFlags = (newSexFlags & 0b111000) | 7;
     }
   }
-  let partner: User | undefined;
-  while (true) {
-    [partner] = await prisma.$queryRaw<User[]>`
+  let timeout = 5;
+  while (--timeout) {
+    const [partner] = await prisma.$queryRaw<User[]>`
       SELECT * FROM "User"
       WHERE accessible = true
       AND convoWithId IS NULL
@@ -398,48 +454,19 @@ async function FindConvo(user: User, message: Message) {
       LIMIT 1
     `;
     if (partner) {
-      let failed = false;
-      const onFail = async () => {
-        await EndConvo(user, 'inaccessible'); //For good measure
-        partner && (await MarkInaccessible(partner.id));
-        failed = true;
-      };
-      //Attempt to join a conversation (fails if partner left after seeking)
-      const partnerChannel = await GetUserChannel(onFail)(partner.id);
-      if (!partnerChannel) continue;
-      await JoinConvo(onFail)(user, partner, message, partnerChannel);
-      if (failed) continue;
-      if (sexFlags !== newSexFlags) {
-        const tried = GenderSeeking(sexFlags).seeking.join(' + ');
-        console.log('switched to seeking anyone for', user.tag);
-        await message.reply(
-          `There were too many people waiting to match with ${tried}. You have been matched with anyone instead.`,
-        );
+      if (!(await StartConvo(user, partner, message, newSexFlags))) {
+        continue;
       }
+    } else {
+      await StartSeeking(user, message);
     }
     break;
   }
-  if (!partner) {
-    //Start seeking
-    if (Number.isInteger(Math.log2(user?.numConvo ?? 0))) {
-      try {
-        await message.channel.send(
-          'Why not join our hang-out while you wait?\nhttps://discord.gg/BbPkC9ATrq',
-        );
-      } catch (e) {}
-    }
-    const estWaitMessage = EstWaitMessage();
-    await SendEmbed(Inaccessibility(user.id))(
-      message.channel,
-      'Waiting for a partner match...',
-      { footer: true },
-      `${estWaitMessage}Your message will be sent to them.
-To cancel, use \`/stop\`.`,
+  if (!timeout) {
+    console.error('Timeout finding convo for', user.id);
+    await message.reply(
+      'Sorry, there was a problem finding a partner. Please try again.',
     );
-    await userUpdate({
-      where: { snowflake },
-      data: { seekingSince: new Date(), greeting: message.content },
-    });
   }
   newConvoSemaphore = false;
 }
@@ -499,7 +526,7 @@ async function MakeContext() {
   }
 
   async function ForwardMessage(message: Message, { id, convoWithId }: User) {
-    if (!message.content) return true;
+    if (!message.content && !message.attachments.size) return true;
     try {
       if (convoWithId === null) return 'No convo';
       const onFail = Inaccessibility(convoWithId);
@@ -545,7 +572,7 @@ async function MakeContext() {
         await message.reply('You are banned from using this bot.');
         return;
       }
-      if (/^(\/|!)/.test(message.content)) {
+      if (/^[/!]/.test(message.content)) {
         const [_, commandName, arg] =
           message.content.trim().match(/^(?:\/|!)(\w+)(?:\s([\s\S]+))?/) ?? [];
         const reply = failable(async (x: BaseMessageOptions) => {
@@ -743,6 +770,7 @@ main()
     process.exit(1);
   });
 
+//FIXME: locate memory leak
 //TODO: auto-ban if user is blocked more than f(user) times
 //TODO: report/ban feature (cached transcript)
 //TODO: consume e.g. /gender male

@@ -3,15 +3,17 @@ import { ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
 import { MakeEmbed } from '.';
 import { failable } from './util';
 
+export type Gender = 'non-binary' | 'female' | 'male';
+
 export function GenderSeeking(sexFlags: User['sexFlags']) {
   const genderFlags = (sexFlags & 0b111000) >> 3;
   const seekFlags = sexFlags & 0b111;
-  const gender = {
+  const gender: Gender | undefined = {
     0b100: 'male' as const,
     0b010: 'female' as const,
     0b001: 'non-binary' as const,
   }[genderFlags];
-  let seeking: ('anyone' | 'non-binary' | 'female' | 'male')[] = [];
+  let seeking: (Gender | 'anyone')[] = [];
   if (seekFlags & 0b100) seeking.push('male');
   if (seekFlags & 0b010) seeking.push('female');
   if (seekFlags & 0b001) seeking.push('non-binary');
