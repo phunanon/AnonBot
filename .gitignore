@@ -4,4 +4,4 @@ node_modules
 prisma/*
 !prisma/schema.prisma
 *.exe
-*.js
+out/

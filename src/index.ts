@@ -335,7 +335,7 @@ async function HandlePotentialCommand(
   if (commandName === 'gender') {
     embed = await GenderEmbed(user);
   }
-  if (commandName === 'ban' && user.tag === 'Moderator#3922') {
+  if (commandName === 'ban' && mods.includes(user.tag)) {
     const wasInConvoWith = await EndConvo(user, 'ban');
     if (wasInConvoWith) {
       await MarkInaccessible(wasInConvoWith, true);
@@ -549,6 +549,7 @@ async function MakeContext() {
       while (msgToMsg.length > 2_000) {
         msgToMsg.shift();
       }
+      AuditMessage()(message, id, convoWithId);
       return true;
     } catch (e: any) {
       console.log('Partner left error', 'rawError' in e ? e.rawError : e);
@@ -583,7 +584,7 @@ async function MakeContext() {
         return;
       }
       //Disallow links for users with fewer than ten conversations
-      if (user.numConvo < 10 && message.content.match(linkRegex)) {
+      if (user.numConvo < 10 && linkRegex.exec(message.content)?.[0]) {
         await message.reply(
           `Sorry, you need to have at least ten conversations before you can send links.
 This is to help mitigate spam.`,
@@ -731,6 +732,44 @@ Ensure that you have DMs enabled for this server and that you're not blocking me
   };
 }
 
+const AuditMessage = failable(_AuditMessage);
+async function _AuditMessage(
+  message: Message,
+  id: number,
+  convoWithId: number,
+) {
+  const guildSf = process.env.AUDIT_GUILD_SF;
+  const channelSf = process.env.AUDIT_CHANNEL_SF;
+  if (!guildSf) {
+    console.warn('No audit guild SF');
+    return;
+  }
+  if (!channelSf) {
+    console.warn('No audit channel SF');
+    return;
+  }
+  const guild = await client.guilds.fetch(guildSf);
+  if (!guild) {
+    console.error(`No guild ${process.env.AUDIT_SERVER_SF}`);
+    return;
+  }
+  const auditChannel = await guild.channels.fetch(
+    process.env.AUDIT_CHANNEL_SF!,
+  );
+  if (!auditChannel?.isTextBased()) {
+    console.error(`No audit channel ${process.env.AUDIT_CHANNEL_SF}`);
+    return;
+  }
+
+  const attachments = message.attachments.map(x => x.url).join('\n');
+
+  const convoId = [...`${id + convoWithId}`].reverse().slice(0, 3).join('');
+  const userId = id.toString(16).padStart(7, '0');
+  const partnerId = convoWithId.toString(16).padStart(7, '0');
+  const info = `${convoId} ${userId} ${partnerId} ${message.author.tag}`;
+  await auditChannel.send(`\`${info}\` ${message.content}\n${attachments}`);
+}
+
 async function main() {
   console.log('Loading.');
   client.once('ready', async () => {
@@ -778,6 +817,5 @@ main()
 //TODO: Probe for user reachability
 //TODO: Message cooldown
 //TODO: ranking by number of conversations
-//TODO: "connect to any gender instead"
 //TODO: prevent db reciprocal blocks
 //TODO: don't double-welcome people who join stranger chat from the bot
