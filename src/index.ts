@@ -15,7 +15,7 @@ import { ChangeGender, Gender, GenderEmbed, GenderSeeking } from './gender';
 import { cacheAdd, cacheHas, failable, resilience } from './util';
 import * as dotenv from 'dotenv';
 dotenv.config();
-const linkRegex = /(https?|discord).+?($|\s)/;
+const linkRegex = /(https?|discord\.gg|discord\.com).+?($|\s)/;
 const yesterday = () => new Date(new Date().getTime() - 24 * 60 * 60 * 1000);
 const oneMinuteAgo = () => new Date(new Date().getTime() - 60 * 1000);
 
