@@ -205,17 +205,17 @@ const minutesSince = (date: Date) =>
 const JoinConvo = failable(_JoinConvo);
 async function _JoinConvo(
   user: User,
-  toJoin: User,
+  partner: User,
   greeting: Message,
   partnerChannel: TextBasedChannel,
 ) {
-  console.log(Date.now(), 'JoinConvo', user.tag, toJoin.tag);
+  console.log(Date.now(), 'JoinConvo', user.tag, partner.tag);
   const { id, snowflake, sexFlags } = user;
-  let waitMin = Minutes(Math.ceil(minutesSince(toJoin.seekingSince!)));
+  let waitMin = Minutes(Math.ceil(minutesSince(partner.seekingSince!)));
   //Generate stats
   const { gender: youGender, seeking: youSeeking } = GenderSeeking(sexFlags);
   const { gender: themGender, seeking: themSeeking } = GenderSeeking(
-    toJoin.sexFlags,
+    partner.sexFlags,
   );
   const seeking = (
     who: 'you' | 'them',
@@ -231,10 +231,10 @@ async function _JoinConvo(
   };
   const yourFields = [
     UserStatsEmbedFields(user, seeking('you', youSeeking, youGender)),
-    UserStatsEmbedFields(toJoin, seeking('them', themSeeking, themGender)),
+    UserStatsEmbedFields(partner, seeking('them', themSeeking, themGender)),
   ];
   const theirFields = [
-    UserStatsEmbedFields(toJoin, seeking('you', themSeeking, themGender)),
+    UserStatsEmbedFields(partner, seeking('you', themSeeking, themGender)),
     UserStatsEmbedFields(user, seeking('them', youSeeking, youGender)),
   ];
   const matchEmbed = async (name: 'you' | 'them') =>
@@ -250,10 +250,17 @@ Use \`/gender\` to match particular genders.`,
   //(This partner send will throw if the partner left after looking for a convo)
   await partnerChannel.send(await matchEmbed('them'));
   await greeting.channel.send(await matchEmbed('you'));
-  if (toJoin.greeting) await greeting.channel.send(toJoin.greeting);
+  if (partner.greeting) {
+    AuditMessage()(
+      await greeting.channel.send(partner.greeting),
+      partner,
+      user.id,
+    );
+  }
   await partnerChannel.send(
     greeting.content || '[Your partner sent no greeting text]',
   );
+  AuditMessage()(greeting, user, partner.id);
   //Update database
   const updateData = {
     seekingSince: null,
@@ -264,10 +271,10 @@ Use \`/gender\` to match particular genders.`,
   await transaction(
     prisma.user.update({
       where: { snowflake },
-      data: { convoWithId: toJoin.id, prevWithId: toJoin.id, ...updateData },
+      data: { convoWithId: partner.id, prevWithId: partner.id, ...updateData },
     }),
     prisma.user.update({
-      where: { id: toJoin.id },
+      where: { id: partner.id },
       data: { convoWithId: id, prevWithId: user.id, ...updateData },
     }),
   );
@@ -525,7 +532,8 @@ async function MakeContext() {
     return { messageReference: partnerMessage };
   }
 
-  async function ForwardMessage(message: Message, { id, convoWithId }: User) {
+  async function ForwardMessage(message: Message, sender: User) {
+    const { id, convoWithId } = sender;
     if (!message.content && !message.attachments.size) return true;
     try {
       if (convoWithId === null) return 'No convo';
@@ -549,7 +557,7 @@ async function MakeContext() {
       while (msgToMsg.length > 2_000) {
         msgToMsg.shift();
       }
-      AuditMessage()(message, id, convoWithId);
+      AuditMessage()(message, sender, convoWithId);
       return true;
     } catch (e: any) {
       console.log('Partner left error', 'rawError' in e ? e.rawError : e);
@@ -733,11 +741,7 @@ Ensure that you have DMs enabled for this server and that you're not blocking me
 }
 
 const AuditMessage = failable(_AuditMessage);
-async function _AuditMessage(
-  message: Message,
-  id: number,
-  convoWithId: number,
-) {
+async function _AuditMessage(message: Message, from: User, toId: number) {
   const guildSf = process.env.AUDIT_GUILD_SF;
   const channelSf = process.env.AUDIT_CHANNEL_SF;
   if (!guildSf) {
@@ -763,10 +767,14 @@ async function _AuditMessage(
 
   const attachments = message.attachments.map(x => x.url).join('\n');
 
-  const convoId = [...`${id + convoWithId}`].reverse().slice(0, 3).join('');
-  const userId = id.toString(16).padStart(7, '0');
-  const partnerId = convoWithId.toString(16).padStart(7, '0');
-  const info = `${convoId} ${userId} ${partnerId} ${message.author.tag}`;
+  const convoId = [...`${from.id + toId}`]
+    .reverse()
+    .slice(0, 3)
+    .join('')
+    .padStart(3, '0');
+  const userId = from.id.toString(16).padStart(7, '0');
+  const partnerId = toId.toString(16).padStart(7, '0');
+  const info = `${convoId} ${userId} ${partnerId} ${from.tag}`;
   await auditChannel.send(`\`${info}\` ${message.content}\n${attachments}`);
 }
 
