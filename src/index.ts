@@ -29,12 +29,18 @@ const client = new Client({
   partials: [Partials.Channel, Partials.Message],
 });
 const prisma = new PrismaClient();
-const historicalConvos: [number, Date][] = [];
+type HistoricalConvo = {
+  userId?: number;
+  at: Date;
+  waitMin: number;
+  sexFlags: User['sexFlags'];
+};
+const historicalMatches: HistoricalConvo[] = [];
 let newConvoSemaphore = false;
 
 const trimHistoricalConvos = () => {
-  while (historicalConvos.length && historicalConvos[0]![1] < yesterday()) {
-    historicalConvos.shift();
+  while (historicalMatches.length && historicalMatches[0]!.at < yesterday()) {
+    historicalMatches.shift();
   }
 };
 
@@ -108,11 +114,11 @@ async function _MakeEmbedFooter(embed: EmbedBuilder) {
   );
   const recentConvos = () => {
     trimHistoricalConvos();
-    const [earliestConvo] = historicalConvos;
-    if (!earliestConvo) return '';
-    const numConvoRecently = historicalConvos.length;
+    const [earliestMatch] = historicalMatches;
+    if (!earliestMatch) return '';
+    const numConvoRecently = historicalMatches.length / 2;
     const numConvoDurationHours = Math.ceil(
-      (Date.now() - earliestConvo[1].getTime()) / 3600000,
+      (Date.now() - earliestMatch.at.getTime()) / 3600000,
     );
     return `\n${numConvoRecently} convos in the last ${numConvoDurationHours} hours.`;
   };
@@ -211,7 +217,8 @@ async function _JoinConvo(
 ) {
   console.log(Date.now(), 'JoinConvo', user.tag, partner.tag);
   const { id, snowflake, sexFlags } = user;
-  let waitMin = Minutes(Math.ceil(minutesSince(partner.seekingSince!)));
+  const waitMin = Math.ceil(minutesSince(partner.seekingSince!));
+  const waitMinText = Minutes(waitMin);
   //Generate stats
   const { gender: youGender, seeking: youSeeking } = GenderSeeking(sexFlags);
   const { gender: themGender, seeking: themSeeking } = GenderSeeking(
@@ -241,7 +248,7 @@ async function _JoinConvo(
     await MakeEmbed(
       'You have been matched with a partner!',
       { colour: 'Green', fields: name === 'you' ? yourFields : theirFields },
-      `It took **${waitMin}** for this match to be found.
+      `It took **${waitMinText}** for this match to be found.
 Use \`/stop\` to disconnect.
 Use \`/block\` to disconnect and block them.
 Use \`/gender\` to match particular genders.`,
@@ -278,8 +285,10 @@ Use \`/gender\` to match particular genders.`,
       data: { convoWithId: id, prevWithId: user.id, ...updateData },
     }),
   );
-  //Cache time
-  historicalConvos.push([user.id, new Date()]);
+  //Cache wait times, and who joined immediately to mitigate spam
+  const at = new Date();
+  historicalMatches.push({ userId: id, at, waitMin, sexFlags });
+  historicalMatches.push({ at, waitMin, sexFlags: partner.sexFlags });
   trimHistoricalConvos();
 }
 
@@ -352,14 +361,18 @@ async function HandlePotentialCommand(
   if (embed) await reply(Inaccessibility(user.id))(embed);
 }
 
-function EstWaitMessage() {
-  const [earliestConvo] = historicalConvos;
-  if (!earliestConvo) return '';
-  //Median of historical wait times
-  const estWait = Math.ceil(
-    minutesSince(earliestConvo[1]) / historicalConvos.length,
-  );
-  return `Estimated wait time: **${Minutes(estWait)}**.
+function EstWaitMessage(sexFlags: User['sexFlags']) {
+  //Average of historical wait times for these sexFlags
+  const withSexFlags: Extract<HistoricalConvo, { sexFlags: number }>[] = [];
+  historicalMatches.forEach(x => 'sexFlags' in x && withSexFlags.push(x));
+  const filtered = withSexFlags.filter(x => x.sexFlags === sexFlags);
+  if (!filtered.length) return '';
+  const sumMin = filtered.reduce((a, b) => a + b.waitMin, 0);
+  const numWait = filtered.length;
+  const estMin = Math.round(sumMin / numWait);
+  const disclaimer =
+    sexFlags === 0b00111111 ? '' : ' for your gender preferences';
+  return `Estimated wait${disclaimer}: **${Minutes(estMin)}**.
 `;
 }
 
@@ -399,7 +412,7 @@ async function StartSeeking(user: User, message: Message) {
       );
     } catch (e) {}
   }
-  const estWaitMessage = EstWaitMessage();
+  const estWaitMessage = EstWaitMessage(user.sexFlags);
   await SendEmbed(Inaccessibility(user.id))(
     message.channel,
     'Waiting for a partner match...',
@@ -626,12 +639,12 @@ This is to help mitigate spam.`,
           return;
         }
         //Mitigate join-leave sprees
-        const latestConvo = [...historicalConvos]
+        const latestConvo = [...historicalMatches]
           .reverse()
-          .find(x => x[0] === user.id);
+          .find(x => x.userId === user.id);
         if (
           latestConvo &&
-          latestConvo[1].getTime() > oneMinuteAgo().getTime()
+          latestConvo.at.getTime() > oneMinuteAgo().getTime()
         ) {
           await message.reply(
             `Sorry, you need to wait one minute after your previous conversation.
@@ -764,8 +777,22 @@ async function _AuditMessage(message: Message, from: User, toId: number) {
     console.error(`No audit channel ${process.env.AUDIT_CHANNEL_SF}`);
     return;
   }
+  const auditAttachmentChannel = await guild.channels.fetch(
+    process.env.AUDIT_IMAGE_CHANNEL_SF!,
+  );
+  if (!auditAttachmentChannel?.isTextBased()) {
+    console.error(
+      `No attachment audit channel ${process.env.AUDIT_ATTACHMENT_CHANNEL_SF}`,
+    );
+    return;
+  }
 
   const attachments = message.attachments.map(x => x.url).join('\n');
+  message.attachments.forEach(attachment =>
+    auditAttachmentChannel.send({
+      files: [attachment],
+    }),
+  );
 
   const convoId = [...`${from.id + toId}`]
     .reverse()
@@ -818,6 +845,7 @@ main()
   });
 
 //FIXME: locate memory leak
+//FIXME: forward non-command messages starting with /
 //TODO: auto-ban if user is blocked more than f(user) times
 //TODO: report/ban feature (cached transcript)
 //TODO: consume e.g. /gender male

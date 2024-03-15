@@ -78,7 +78,7 @@ export async function GenderEmbed(user: User) {
       colour: 'Purple',
       rows,
       fields: [
-        { name: 'Your gender', inline: true, value: gender || 'Unknown' },
+        { name: 'Your gender', inline: true, value: gender ?? 'Unknown' },
         { name: "You're seeking", inline: true, value: seeks },
       ],
     },
@@ -105,14 +105,14 @@ export async function _ChangeGender(
       seekingMale: gender,
       seekingFemale: gender,
       seekingNonbinary: gender,
-    }[command] || 0;
+    }[command] ?? 0;
 
   const newSeeking =
     {
       seekingMale: 0b100 as const,
       seekingFemale: 0b010 as const,
       seekingNonbinary: 0b001 as const,
-    }[command] || 0;
+    }[command] ?? 0;
 
   let sexFlags = (newGender << 3) | (seeking ^ newSeeking);
   if (!(sexFlags & 0b111)) sexFlags |= 0b111; //If seeking none, seek all

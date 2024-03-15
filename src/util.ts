@@ -27,7 +27,7 @@ export function failable<P extends any[], U>(f: (...args: P) => Promise<U>) {
       try {
         return await f(...params);
       } catch (e: any) {
-        console.log('failable', 'rawError' in e ? e.rawError : e);
+        console.log('failable', f.name, 'rawError' in e ? e.rawError : e);
         const x = await onFail?.();
         return x;
       }
