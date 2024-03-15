@@ -2,7 +2,7 @@ const maintenanceMode = false;
 const maintenanceModeMessage = `The bot is currently in maintenance mode.
 Your conversation will continue as normal once work is complete.
 Please try again in five minutes.`;
-const mods = ['anon.mod#0', 'auekha#0'];
+const mods = [353221987058974724n];
 import { PrismaClient, PrismaPromise, User } from '@prisma/client';
 import { Client, IntentsBitField, CacheType, Partials } from 'discord.js';
 import { Interaction, Message, PartialMessage, Typing } from 'discord.js';
@@ -52,13 +52,10 @@ const userUpdate = async (
 ) => resilience(() => prisma.user.update(params));
 
 const userBlock = failable(async (blockerId: number, blockedId: number) => {
-  await transaction(
-    prisma.block.create({ data: { blockerId, blockedId } }),
-    prisma.user.update({
-      data: { prevWithId: null },
-      where: { id: blockerId },
-    }),
-  );
+  const data = { blockerId, blockedId };
+  if (!(await prisma.block.findFirst({ where: data }))) {
+    await prisma.block.create({ data });
+  }
 });
 
 async function MarkInaccessible(id: number, banned?: boolean) {
@@ -251,6 +248,7 @@ async function _JoinConvo(
       `It took **${waitMinText}** for this match to be found.
 Use \`/stop\` to disconnect.
 Use \`/block\` to disconnect and block them.
+Use \`/report\` to report them to moderators.
 Use \`/gender\` to match particular genders.`,
     );
   //Inform users and exchange greetings
@@ -258,20 +256,18 @@ Use \`/gender\` to match particular genders.`,
   await partnerChannel.send(await matchEmbed('them'));
   await greeting.channel.send(await matchEmbed('you'));
   if (partner.greeting) {
-    AuditMessage()(
-      await greeting.channel.send(partner.greeting),
-      partner,
-      user.id,
-    );
+    const message = await greeting.channel.send(partner.greeting);
+    AuditMessage()({ message, from: partner, toId: user.id });
   }
   await partnerChannel.send(
     greeting.content || '[Your partner sent no greeting text]',
   );
-  AuditMessage()(greeting, user, partner.id);
+  AuditMessage()({ message: greeting, from: user, toId: partner.id });
   //Update database
   const updateData = {
     seekingSince: null,
     greeting: null,
+    hasReported: false,
     numConvo: { increment: 1 },
     numMessage: { increment: 1 },
   };
@@ -341,17 +337,51 @@ async function HandlePotentialCommand(
         )(user.id, prevWithId);
       } else {
         embed = await MakeEmbed(
-          "You aren't in a conversation",
+          'You have nobody to block',
           { colour: 'Red' },
-          'Send a message to start a new conversation.',
+          'Send a message to start a conversation.',
         );
       }
+    }
+  }
+  if (commandName === 'report') {
+    const who = user.convoWithId ?? user.prevWithId;
+    const previous = who !== user.convoWithId;
+    if (user.hasReported) {
+      embed = await MakeEmbed(
+        `You have already sent a report for ${
+          previous ? 'the previous' : 'this'
+        } conversation`,
+        {},
+      );
+    } else if (!who) {
+      embed = await MakeEmbed(
+        'You have nobody to report',
+        { colour: 'Red' },
+        'Send a message to start a conversation.',
+      );
+    } else {
+      const previousText = previous ? 'previous ' : '';
+      await AuditMessage()({ reporter: user });
+      embed = await MakeEmbed(
+        `Your ${previousText}conversation partner has been successfully reported`,
+        { colour: 'Green' },
+        `Thank you for your report.
+A moderator will review the conversation and take action accordingly.
+Feel free to now \`/block\` your partner or just \`/stop\`.`,
+      );
+      await transaction(
+        prisma.user.update({
+          data: { hasReported: true },
+          where: { id: user.id },
+        }),
+      );
     }
   }
   if (commandName === 'gender') {
     embed = await GenderEmbed(user);
   }
-  if (commandName === 'ban' && mods.includes(user.tag)) {
+  if (commandName === 'ban' && mods.includes(user.snowflake)) {
     const wasInConvoWith = await EndConvo(user, 'ban');
     if (wasInConvoWith) {
       await MarkInaccessible(wasInConvoWith, true);
@@ -570,7 +600,7 @@ async function MakeContext() {
       while (msgToMsg.length > 2_000) {
         msgToMsg.shift();
       }
-      AuditMessage()(message, sender, convoWithId);
+      AuditMessage()({ message, from: sender, toId: convoWithId });
       return true;
     } catch (e: any) {
       console.log('Partner left error', 'rawError' in e ? e.rawError : e);
@@ -582,7 +612,7 @@ async function MakeContext() {
     async HandleMessageCreate(message: Message) {
       if (message.author.bot) return;
       if (message.channel.type !== ChannelType.DM) return;
-      if (maintenanceMode && !mods.includes(message.author.tag)) {
+      if (maintenanceMode && !mods.includes(BigInt(message.author.id))) {
         await message.reply(maintenanceModeMessage);
         console.log('Maintenance mode informed', message.author.tag);
         return;
@@ -668,7 +698,7 @@ This is to help mitigate spam.`,
       }
     },
     async HandleInteractionCreate(interaction: Interaction<CacheType>) {
-      if (maintenanceMode && !mods.includes(interaction.user.tag)) {
+      if (maintenanceMode && !mods.includes(BigInt(interaction.user.id))) {
         await interaction.channel?.send(maintenanceModeMessage);
         console.log('Maintenance mode informed', interaction.user.tag);
         return;
@@ -754,7 +784,10 @@ Ensure that you have DMs enabled for this server and that you're not blocking me
 }
 
 const AuditMessage = failable(_AuditMessage);
-async function _AuditMessage(message: Message, from: User, toId: number) {
+type Audit =
+  | { from: User; message: Message; toId: number }
+  | { reporter: User };
+async function _AuditMessage(args: Audit) {
   const guildSf = process.env.AUDIT_GUILD_SF;
   const channelSf = process.env.AUDIT_CHANNEL_SF;
   if (!guildSf) {
@@ -786,6 +819,15 @@ async function _AuditMessage(message: Message, from: User, toId: number) {
     );
     return;
   }
+
+  if ('reporter' in args) {
+    const { id, tag } = args.reporter;
+    const userId = id.toString(16).padStart(7, '0');
+    await auditChannel.send(`\`${userId} ${tag}\` <@${mods.join('> <@')}>`);
+    return;
+  }
+
+  const { message, from, toId } = args;
 
   const attachments = message.attachments.map(x => x.url).join('\n');
   message.attachments.forEach(attachment =>
@@ -822,6 +864,10 @@ async function main() {
       name: 'gender',
       description: 'Set your gender and gender preferences',
     });
+    client.application?.commands.create({
+      name: 'report',
+      description: 'Report your current or previous conversation to moderators',
+    });
 
     client.on('messageCreate', ctx.HandleMessageCreate);
     client.on('interactionCreate', ctx.HandleInteractionCreate);
@@ -847,7 +893,6 @@ main()
 //FIXME: locate memory leak
 //FIXME: forward non-command messages starting with /
 //TODO: auto-ban if user is blocked more than f(user) times
-//TODO: report/ban feature (cached transcript)
 //TODO: consume e.g. /gender male
 //TODO: Gender change cooldown
 //TODO: Probe for user reachability

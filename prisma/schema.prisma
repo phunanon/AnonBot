@@ -11,6 +11,7 @@ model User {
   id           Int       @id @default(autoincrement())
   createdAt    BigInt    @default(0)
   banned       Boolean   @default(false)
+  hasReported  Boolean   @default(false)
   //Discord info
   snowflake    BigInt    @unique
   tag          String
