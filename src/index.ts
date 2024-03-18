@@ -436,11 +436,7 @@ async function StartConvo(
 
 async function StartSeeking(user: User, message: Message) {
   if (Number.isInteger(Math.log2(user?.numConvo ?? 0))) {
-    try {
-      await message.channel.send(
-        'Why not join our hang-out while you wait?\nhttps://discord.gg/BbPkC9ATrq',
-      );
-    } catch (e) {}
+    await inviteToHangoutServer(user, message);
   }
   const estWaitMessage = EstWaitMessage(user.sexFlags);
   await SendEmbed(Inaccessibility(user.id))(
@@ -455,6 +451,36 @@ To cancel, use \`/stop\`.`,
     where: { snowflake },
     data: { seekingSince: new Date(), greeting: message.content },
   });
+}
+
+async function inviteToHangoutServer(user: User, message: Message) {
+  try {
+    const guildSf = process.env.HANGOUT_GUILD_SF;
+    if (!guildSf) {
+      console.warn('No hangout guild SF');
+      return;
+    }
+    //Check if this user is already in the guild, to not invite them again
+    const guild = await client.guilds.fetch(guildSf);
+    if (!guild) {
+      console.warn('No hangout guild');
+      return;
+    }
+    const invite = process.env.HANGOUT_GUILD_INVITE;
+    if (!invite) {
+      console.warn('No hangout guild invite');
+      return;
+    }
+    const member = await guild.members.search({ query: user.tag });
+    if (member.size) {
+      return;
+    }
+    await message.channel.send(
+      `Why not join our hang-out while you wait?\nhttps://discord.gg/${invite}`,
+    );
+  } catch (e) {
+    console.warn('inviteToHangoutServer', e);
+  }
 }
 
 //TODO: make failable
@@ -899,4 +925,3 @@ main()
 //TODO: Message cooldown
 //TODO: ranking by number of conversations
 //TODO: prevent db reciprocal blocks
-//TODO: don't double-welcome people who join stranger chat from the bot
